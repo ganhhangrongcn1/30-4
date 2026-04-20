@@ -115,20 +115,26 @@ function Checkbox({ checked, onCheckedChange, style, ...props }) {
     <input
       type="checkbox"
       checked={!!checked}
-      onChange={(e) => onCheckedChange?.(e.target.checked)}
-      style={{ width: 18, height: 18, ...style }}
+      onChange={(e) => {
+        e.stopPropagation();
+        onCheckedChange?.(e.target.checked);
+      }}
+      style={{ width: 18, height: 18, cursor: "pointer", ...style }}
       {...props}
     />
   );
 }
 
-function ScrollArea({ style, children, ...props }) {
+const ScrollArea = React.forwardRef(function ScrollArea(
+  { style, children, ...props },
+  ref
+) {
   return (
-    <div style={{ overflow: "auto", ...style }} {...props}>
+    <div ref={ref} style={{ overflow: "auto", ...style }} {...props}>
       {children}
     </div>
   );
-}
+});
 
 function Button({ variant = "default", style, children, ...props }) {
   const baseStyle = {
@@ -560,7 +566,10 @@ export default function App() {
   const [activeDishKey, setActiveDishKey] = useState(null);
   const [activeOrderId, setActiveOrderId] = useState(null);
   const [pendingOrderIds, setPendingOrderIds] = useState({});
+
   const orderRefs = useRef({});
+  const groupedDishRefs = useRef({});
+  const groupedScrollRef = useRef(null);
   const lastLocalUpdateRef = useRef(0);
 
   const BASE_WIDTH = 1440;
@@ -725,6 +734,37 @@ export default function App() {
       node.scrollIntoView({ behavior: "auto", block: "center" });
     }
   }
+
+ function scrollToFirstGroupedDishForOrder(order) {
+  if (!order) return;
+
+  const pendingDishKeys = getPendingDishKeysForOrder(order);
+  if (!pendingDishKeys.length) return;
+
+  const firstMatchedGroup = groupedDishes.find((group) =>
+    pendingDishKeys.includes(group.key)
+  );
+
+  if (!firstMatchedGroup) return;
+
+  const node = groupedDishRefs.current[firstMatchedGroup.key];
+  const container = groupedScrollRef.current;
+
+  if (node && container) {
+    const containerRect = container.getBoundingClientRect();
+    const nodeRect = node.getBoundingClientRect();
+
+    const top =
+      container.scrollTop +
+      (nodeRect.top - containerRect.top) -
+      16;
+
+    container.scrollTo({
+      top: Math.max(0, top),
+      behavior: "auto",
+    });
+  }
+}
 
   async function updateDishPortion(orderId, dishIndex, portionIndex, checked, qty) {
     if (pendingOrderIds[orderId]) return;
@@ -1139,9 +1179,17 @@ export default function App() {
                         <CardHeader
                           style={{ cursor: "pointer" }}
                           onClick={() => {
-                            if (activeOrderId === order.id) setActiveOrderId(null);
-                            else setActiveOrderId(order.id);
+                            const nextActiveOrderId =
+                              activeOrderId === order.id ? null : order.id;
+
+                            setActiveOrderId(nextActiveOrderId);
                             if (activeDishKey) setActiveDishKey(null);
+
+                            if (nextActiveOrderId) {
+                              requestAnimationFrame(() => {
+                                scrollToFirstGroupedDishForOrder(order);
+                              });
+                            }
                           }}
                         >
                           <div
@@ -1292,22 +1340,20 @@ export default function App() {
                                           alignItems: "flex-start",
                                         }}
                                       >
-                                        <Checkbox
-                                          checked={isDone}
-                                          disabled={!!pendingOrderIds[order.id]}
-                                          onClick={(e) => e.stopPropagation()}
-                                          onChange={(e) => e.stopPropagation()}
-                                          onCheckedChange={(checked) =>
-                                            updateDishPortion(
-                                              order.id,
-                                              index,
-                                              portionIndex,
-                                              Boolean(checked),
-                                              qty
-                                            )
-                                          }
-                                          style={{ marginTop: 4 }}
-                                        />
+                                     <Checkbox
+  checked={isDone}
+  disabled={!!pendingOrderIds[order.id]}
+  onCheckedChange={(checked) =>
+    updateDishPortion(
+      order.id,
+      index,
+      portionIndex,
+      Boolean(checked),
+      qty
+    )
+  }
+  style={{ marginTop: 4 }}
+/>
 
                                         <div style={{ flex: 1 }}>
                                           <div
@@ -1476,8 +1522,13 @@ export default function App() {
                               block: "center",
                             });
                           }
+
                           setActiveOrderId(order.id);
                           if (activeDishKey) setActiveDishKey(null);
+
+                          requestAnimationFrame(() => {
+                            scrollToFirstGroupedDishForOrder(order);
+                          });
                         }}
                         style={{
                           minWidth: 118,
@@ -1545,6 +1596,7 @@ export default function App() {
 
               <CardContent>
                 <ScrollArea
+                  ref={groupedScrollRef}
                   style={{
                     height: 610,
                     minHeight: 610,
@@ -1575,9 +1627,26 @@ export default function App() {
                         const isOrderHighlighted =
                           !!activeOrder && orderDishKeys.includes(group.key);
 
+                        const activeOrderCode = activeOrder
+                          ? formatPlatformOrderCode(
+                              activeOrder.nen_tang,
+                              activeOrder.ma_don_san ||
+                                activeOrder.ma_noi_bo ||
+                                activeOrder.id
+                            )
+                          : null;
+
+                        const hasActiveOrderNote =
+                          !!activeOrder &&
+                          group.notes.some((note) => activeOrderCode === note.orderCode);
+
                         return (
                           <button
                             key={group.key}
+                            ref={(node) => {
+                              if (node) groupedDishRefs.current[group.key] = node;
+                              else delete groupedDishRefs.current[group.key];
+                            }}
                             type="button"
                             onClick={() => {
                               setActiveOrderId(null);
@@ -1745,26 +1814,10 @@ export default function App() {
                                   marginTop: 12,
                                   borderRadius: 12,
                                   padding: 10,
-                                  background:
-                                    activeOrder &&
-                                    group.notes.some(
-                                      (note) =>
-                                        (activeOrder.ma_don_san ||
-                                          activeOrder.ma_noi_bo ||
-                                          activeOrder.id) === note.orderCode
-                                    )
-                                      ? "#fef3c7"
-                                      : "#fffbeb",
-                                  border:
-                                    activeOrder &&
-                                    group.notes.some(
-                                      (note) =>
-                                        (activeOrder.ma_don_san ||
-                                          activeOrder.ma_noi_bo ||
-                                          activeOrder.id) === note.orderCode
-                                    )
-                                      ? "1px solid #fcd34d"
-                                      : "none",
+                                  background: hasActiveOrderNote ? "#fef3c7" : "#fffbeb",
+                                  border: hasActiveOrderNote
+                                    ? "1px solid #fcd34d"
+                                    : "none",
                                 }}
                               >
                                 <div
@@ -1781,10 +1834,7 @@ export default function App() {
                                   {group.notes.slice(0, 5).map((note, index) => {
                                     const noteTheme = platformTheme(note.platform);
                                     const isActiveOrderNote =
-                                      activeOrder &&
-                                      (activeOrder.ma_don_san ||
-                                        activeOrder.ma_noi_bo ||
-                                        activeOrder.id) === note.orderCode;
+                                      activeOrder && activeOrderCode === note.orderCode;
 
                                     return (
                                       <div
@@ -1796,8 +1846,11 @@ export default function App() {
                                           borderRadius: 8,
                                           padding: "6px 8px",
                                           background: isActiveOrderNote
-                                            ? "#fef3c7"
+                                            ? "#fde68a"
                                             : "transparent",
+                                          border: isActiveOrderNote
+                                            ? "1px solid #f59e0b"
+                                            : "none",
                                           opacity: isActiveOrderNote ? 1 : 0.5,
                                           color: "#92400e",
                                         }}
