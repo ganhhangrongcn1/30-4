@@ -795,6 +795,11 @@ export default function App() {
     }
   }
 
+  function handleDishCardToggle(orderId, dishIndex, portionIndex, isDone, qty) {
+    if (pendingOrderIds[orderId]) return;
+    updateDishPortion(orderId, dishIndex, portionIndex, !isDone, qty);
+  }
+
   async function markOrderDone(orderId) {
     if (pendingOrderIds[orderId]) return;
 
@@ -1254,13 +1259,30 @@ export default function App() {
                                   const isDone = !!doneList[portionIndex];
 
                                   return (
-                                    <div
+                                    <button
                                       key={itemKey}
+                                      type="button"
+                                      disabled={!!pendingOrderIds[order.id]}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDishCardToggle(
+                                          order.id,
+                                          index,
+                                          portionIndex,
+                                          isDone,
+                                          qty
+                                        );
+                                      }}
                                       style={{
+                                        width: "100%",
                                         background: "rgba(255,255,255,0.9)",
                                         border: "1px solid #e2e8f0",
                                         borderRadius: 18,
                                         padding: 14,
+                                        textAlign: "left",
+                                        cursor: !!pendingOrderIds[order.id]
+                                          ? "not-allowed"
+                                          : "pointer",
                                       }}
                                     >
                                       <div
@@ -1274,6 +1296,7 @@ export default function App() {
                                           checked={isDone}
                                           disabled={!!pendingOrderIds[order.id]}
                                           onClick={(e) => e.stopPropagation()}
+                                          onChange={(e) => e.stopPropagation()}
                                           onCheckedChange={(checked) =>
                                             updateDishPortion(
                                               order.id,
@@ -1336,6 +1359,7 @@ export default function App() {
                                                 <Badge
                                                   key={`${itemKey}-${optIndex}`}
                                                   variant="outline"
+                                                  onClick={(e) => e.stopPropagation()}
                                                 >
                                                   {opt}
                                                 </Badge>
@@ -1345,6 +1369,7 @@ export default function App() {
 
                                           {dish?.ghi_chu ? (
                                             <div
+                                              onClick={(e) => e.stopPropagation()}
                                               style={{
                                                 marginTop: 10,
                                                 background: "#fef3c7",
@@ -1371,7 +1396,7 @@ export default function App() {
                                           ) : null}
                                         </div>
                                       </div>
-                                    </div>
+                                    </button>
                                   );
                                 });
                               })}
