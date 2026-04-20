@@ -554,6 +554,68 @@ function miniOrderBoxStyle(order) {
   };
 }
 
+function activeMiniOrderBoxStyle(order) {
+  const value = String(order?.nen_tang || "").toLowerCase();
+  const kitchenDone = !!order?._kitchenDone;
+
+  if (kitchenDone) {
+    return {
+      border: "3px solid #64748b",
+      background: "#e2e8f0",
+      color: "#334155",
+      boxShadow:
+        "0 0 0 4px rgba(100,116,139,0.18), 0 8px 18px rgba(100,116,139,0.16)",
+      waitColor: "#475569",
+    };
+  }
+
+  if (
+    value.includes("xanh_ngon") ||
+    value.includes("xanh-ngon") ||
+    value.includes("xanh ngon")
+  ) {
+    return {
+      border: "3px solid #0f766e",
+      background: "#ccfbf1",
+      color: "#134e4a",
+      boxShadow:
+        "0 0 0 4px rgba(13,148,136,0.18), 0 8px 18px rgba(13,148,136,0.16)",
+      waitColor: "#0f766e",
+    };
+  }
+
+  if (value.includes("grab")) {
+    return {
+      border: "3px solid #16a34a",
+      background: "#dcfce7",
+      color: "#14532d",
+      boxShadow:
+        "0 0 0 4px rgba(34,197,94,0.18), 0 8px 18px rgba(34,197,94,0.16)",
+      waitColor: "#15803d",
+    };
+  }
+
+  if (value.includes("shopee")) {
+    return {
+      border: "3px solid #dc2626",
+      background: "#fee2e2",
+      color: "#991b1b",
+      boxShadow:
+        "0 0 0 4px rgba(239,68,68,0.18), 0 8px 18px rgba(239,68,68,0.16)",
+      waitColor: "#b91c1c",
+    };
+  }
+
+  return {
+    border: "3px solid #374151",
+    background: "#f3f4f6",
+    color: "#111827",
+    boxShadow:
+      "0 0 0 4px rgba(55,65,81,0.14), 0 8px 18px rgba(55,65,81,0.12)",
+    waitColor: "#374151",
+  };
+}
+
 export default function App() {
   const [orders, setOrders] = useState([]);
   const [search, setSearch] = useState("");
@@ -735,36 +797,34 @@ export default function App() {
     }
   }
 
- function scrollToFirstGroupedDishForOrder(order) {
-  if (!order) return;
+  function scrollToFirstGroupedDishForOrder(order) {
+    if (!order) return;
 
-  const pendingDishKeys = getPendingDishKeysForOrder(order);
-  if (!pendingDishKeys.length) return;
+    const pendingDishKeys = getPendingDishKeysForOrder(order);
+    if (!pendingDishKeys.length) return;
 
-  const firstMatchedGroup = groupedDishes.find((group) =>
-    pendingDishKeys.includes(group.key)
-  );
+    const firstMatchedGroup = groupedDishes.find((group) =>
+      pendingDishKeys.includes(group.key)
+    );
 
-  if (!firstMatchedGroup) return;
+    if (!firstMatchedGroup) return;
 
-  const node = groupedDishRefs.current[firstMatchedGroup.key];
-  const container = groupedScrollRef.current;
+    const node = groupedDishRefs.current[firstMatchedGroup.key];
+    const container = groupedScrollRef.current;
 
-  if (node && container) {
-    const containerRect = container.getBoundingClientRect();
-    const nodeRect = node.getBoundingClientRect();
+    if (node && container) {
+      const containerRect = container.getBoundingClientRect();
+      const nodeRect = node.getBoundingClientRect();
 
-    const top =
-      container.scrollTop +
-      (nodeRect.top - containerRect.top) -
-      16;
+      const top =
+        container.scrollTop + (nodeRect.top - containerRect.top) - 28;
 
-    container.scrollTo({
-      top: Math.max(0, top),
-      behavior: "auto",
-    });
+      container.scrollTo({
+        top: Math.max(0, top),
+        behavior: "auto",
+      });
+    }
   }
-}
 
   async function updateDishPortion(orderId, dishIndex, portionIndex, checked, qty) {
     if (pendingOrderIds[orderId]) return;
@@ -1311,8 +1371,7 @@ export default function App() {
                                       key={itemKey}
                                       type="button"
                                       disabled={!!pendingOrderIds[order.id]}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
+                                      onClick={() => {
                                         handleDishCardToggle(
                                           order.id,
                                           index,
@@ -1340,20 +1399,20 @@ export default function App() {
                                           alignItems: "flex-start",
                                         }}
                                       >
-                                     <Checkbox
-  checked={isDone}
-  disabled={!!pendingOrderIds[order.id]}
-  onCheckedChange={(checked) =>
-    updateDishPortion(
-      order.id,
-      index,
-      portionIndex,
-      Boolean(checked),
-      qty
-    )
-  }
-  style={{ marginTop: 4 }}
-/>
+                                        <Checkbox
+                                          checked={isDone}
+                                          disabled={!!pendingOrderIds[order.id]}
+                                          onCheckedChange={(checked) =>
+                                            updateDishPortion(
+                                              order.id,
+                                              index,
+                                              portionIndex,
+                                              Boolean(checked),
+                                              qty
+                                            )
+                                          }
+                                          style={{ marginTop: 4 }}
+                                        />
 
                                         <div style={{ flex: 1 }}>
                                           <div
@@ -1503,10 +1562,13 @@ export default function App() {
                 >
                   {filteredOrders.map((order) => {
                     const miniStyle = miniOrderBoxStyle(order);
+                    const activeMiniStyle = activeMiniOrderBoxStyle(order);
+
                     const code = formatPlatformOrderCode(
                       order.nen_tang,
                       order.ma_don_san
                     );
+
                     const waiting = order?._waitingMinutes || 0;
                     const isActive = activeOrderId === order.id;
 
@@ -1538,12 +1600,22 @@ export default function App() {
                           textAlign: "left",
                           fontWeight: 700,
                           cursor: "pointer",
+                          border: isActive
+                            ? activeMiniStyle.border
+                            : miniStyle.border,
+                          background: isActive
+                            ? activeMiniStyle.background
+                            : miniStyle.background,
+                          color: isActive
+                            ? activeMiniStyle.color
+                            : miniStyle.color,
                           boxShadow: isActive
-                            ? "0 0 0 3px rgba(139,92,246,0.22)"
+                            ? activeMiniStyle.boxShadow
                             : "none",
-                          transform: isActive ? "translateY(-1px)" : "none",
-                          transition: "all 0.15s ease",
-                          ...miniStyle,
+                          transform: isActive
+                            ? "translateY(-2px) scale(1.02)"
+                            : "none",
+                          transition: "all 0.18s ease",
                         }}
                       >
                         <div
@@ -1560,8 +1632,11 @@ export default function App() {
                           style={{
                             marginTop: 10,
                             fontSize: 13,
-                            fontWeight: 600,
-                            opacity: 0.9,
+                            fontWeight: isActive ? 700 : 600,
+                            opacity: 1,
+                            color: isActive
+                              ? activeMiniStyle.waitColor
+                              : undefined,
                           }}
                         >
                           Chờ {waiting}’
@@ -1663,6 +1738,7 @@ export default function App() {
                               width: "100%",
                               textAlign: "left",
                               borderRadius: 18,
+                              scrollMarginTop: 20,
                               border: `1px solid ${
                                 activeDishKey === group.key
                                   ? "#0ea5e9"
