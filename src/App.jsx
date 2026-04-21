@@ -1636,7 +1636,10 @@ export default function App() {
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               <Phone size={15} />
-                              {order.khach_hang || "Không tên"}
+                              <span>
+    {order.khach_hang || "Không tên"}
+    {order.sdt ? ` - ${order.sdt}` : ""}
+  </span>
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               <Clock3 size={15} />
