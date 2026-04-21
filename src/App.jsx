@@ -619,12 +619,12 @@ function activeMiniOrderBoxStyle(order) {
 }
 
 export default function App() {
-  const [orders, setOrders] = useState([]);
-  const [search, setSearch] = useState("");
-  const [platformFilter, setPlatformFilter] = useState("all");
-  const [dateFilter, setDateFilter] = useState("");
-  const [orderStateFilter, setOrderStateFilter] = useState("all");
-  const [loading, setLoading] = useState(true);
+const [orders, setOrders] = useState([]);
+const [search, setSearch] = useState("");
+const [platformFilter, setPlatformFilter] = useState("all");
+const [dateFilter, setDateFilter] = useState(() => getTodayDateKey());
+const [orderStateFilter, setOrderStateFilter] = useState("doing");
+const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [activeDishKey, setActiveDishKey] = useState(null);
@@ -632,6 +632,7 @@ export default function App() {
   const [pendingOrderIds, setPendingOrderIds] = useState({});
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [newOrderCount, setNewOrderCount] = useState(0);
+  const [unseenOrderIds, setUnseenOrderIds] = useState([]);
   const [soundVolume, setSoundVolume] = useState(() => {
     if (typeof window === "undefined") return 0.22;
     const saved = window.localStorage.getItem("kitchen_sound_volume");
@@ -649,6 +650,8 @@ export default function App() {
     typeof document !== "undefined" ? document.title : "Bảng bếp realtime"
   );
   const lastSoundTimeRef = useRef(0);
+  const ringingIntervalRef = useRef(null);
+  const isRingingRef = useRef(false);
 
   const BASE_WIDTH = 1440;
   const BASE_HEIGHT = 900;
@@ -775,6 +778,44 @@ export default function App() {
     }
   }
 
+  function stopContinuousRinging() {
+    if (ringingIntervalRef.current) {
+      clearInterval(ringingIntervalRef.current);
+      ringingIntervalRef.current = null;
+    }
+    isRingingRef.current = false;
+  }
+
+  async function startContinuousRinging() {
+    if (!soundEnabled) return;
+    if (isRingingRef.current) return;
+
+    isRingingRef.current = true;
+    await playNewOrderSound();
+
+    ringingIntervalRef.current = setInterval(async () => {
+      if (!soundEnabled) return;
+      await playNewOrderSound();
+    }, 2200);
+  }
+
+  function markOrderAsSeen(orderId) {
+    setUnseenOrderIds((prev) => {
+      const next = prev.filter((id) => id !== orderId);
+
+      if (next.length === 0) {
+        setNewOrderCount(0);
+        stopTitleFlash();
+        stopContinuousRinging();
+      } else {
+        setNewOrderCount(next.length);
+        startTitleFlash(next.length);
+      }
+
+      return next;
+    });
+  }
+
   useEffect(() => {
     function handleResize() {
       setViewport({
@@ -867,15 +908,27 @@ export default function App() {
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "orders" },
-        async () => {
-          await playNewOrderSound();
+        async (payload) => {
+          const newId = payload?.new?.id;
 
-          setNewOrderCount((prev) => {
-            const next = prev + 1;
-            startTitleFlash(next);
+          setUnseenOrderIds((prev) => {
+            const normalizedId =
+              newId !== undefined && newId !== null ? String(newId) : null;
+            const prevNormalized = prev.map((id) => String(id));
+
+            let next = prev;
+            if (normalizedId && !prevNormalized.includes(normalizedId)) {
+              next = [...prev, normalizedId];
+            }
+
+            setNewOrderCount(next.length);
+            if (next.length > 0) {
+              startTitleFlash(next.length);
+            }
             return next;
           });
 
+          await startContinuousRinging();
           loadOrders();
         }
       )
@@ -893,15 +946,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    function handleWindowFocus() {
-      setNewOrderCount(0);
-      stopTitleFlash();
-    }
-
-    window.addEventListener("focus", handleWindowFocus);
     return () => {
-      window.removeEventListener("focus", handleWindowFocus);
       stopTitleFlash();
+      stopContinuousRinging();
     };
   }, []);
 
@@ -1031,7 +1078,7 @@ export default function App() {
     setOrderPending(orderId, true);
 
     const updatedOrders = orders.map((order) => {
-      if (order.id !== orderId) return order;
+      if (String(order.id) !== String(orderId)) return order;
 
       const dishesClone = [...(Array.isArray(order.dishes) ? order.dishes : [])];
       const currentDish = dishesClone[dishIndex];
@@ -1065,7 +1112,7 @@ export default function App() {
 
     setOrders(updatedOrders);
 
-    const updatedOrder = updatedOrders.find((o) => o.id === orderId);
+    const updatedOrder = updatedOrders.find((o) => String(o.id) === String(orderId));
     if (!updatedOrder) {
       setOrderPending(orderId, false);
       return;
@@ -1108,7 +1155,7 @@ export default function App() {
 
     setOrders((prev) =>
       prev.map((order) =>
-        order.id === orderId
+        String(order.id) === String(orderId)
           ? {
               ...order,
               trang_thai: "FINISH",
@@ -1141,7 +1188,7 @@ export default function App() {
   async function resetOrder(orderId) {
     if (pendingOrderIds[orderId]) return;
 
-    const order = orders.find((o) => o.id === orderId);
+    const order = orders.find((o) => String(o.id) === String(orderId));
     if (!order) return;
 
     const previousOrders = orders;
@@ -1160,7 +1207,7 @@ export default function App() {
 
     setOrders((prev) =>
       prev.map((item) =>
-        item.id === orderId
+        String(item.id) === String(orderId)
           ? {
               ...item,
               dishes,
@@ -1193,844 +1240,340 @@ export default function App() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        height: "100vh",
-        overflow: "hidden",
-        background: "#f8fafc",
-        fontFamily: "Arial, sans-serif",
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "flex-start",
-        padding: isTablet ? 0 : 12,
-      }}
-    >
+    <>
+      <style>{`
+        @keyframes newOrderBlink {
+          0% { opacity: 1; }
+          50% { opacity: 0.55; }
+          100% { opacity: 1; }
+        }
+      `}</style>
+
       <div
         style={{
-          width: BASE_WIDTH,
-          height: BASE_HEIGHT,
-          transform: `scale(${appScale})`,
-          transformOrigin: "top center",
+          minHeight: "100vh",
+          height: "100vh",
+          overflow: "hidden",
+          background: "#f8fafc",
+          fontFamily: "Arial, sans-serif",
+          display: "flex",
+          justifyContent: "center",
+          alignItems: "flex-start",
+          padding: isTablet ? 0 : 12,
         }}
       >
-        <div style={{ maxWidth: 1440, margin: "0 auto", height: "100%" }}>
-          <div
-            style={{
-              background: "#fff",
-              borderRadius: 24,
-              padding: 16,
-              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-              marginBottom: 16,
-            }}
-          >
+        <div
+          style={{
+            width: BASE_WIDTH,
+            height: BASE_HEIGHT,
+            transform: `scale(${appScale})`,
+            transformOrigin: "top center",
+          }}
+        >
+          <div style={{ maxWidth: 1440, margin: "0 auto", height: "100%" }}>
             <div
               style={{
-                display: "flex",
-                flexWrap: "wrap",
-                justifyContent: "space-between",
-                gap: 16,
+                background: "#fff",
+                borderRadius: 24,
+                padding: 16,
+                boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                marginBottom: 16,
               }}
             >
-              <div>
-                <h1 style={{ margin: 0, fontSize: 32 }}>Bảng bếp realtime</h1>
-                <p style={{ margin: "8px 0 0", color: "#64748b" }}>
-                  Đơn hàng hiển thị realtime từ Supabase, tick món khi làm xong.
-                </p>
-              </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 8,
-                    alignItems: "center",
-                  }}
-                >
-                  <div style={{ position: "relative", minWidth: 240 }}>
-                    <Search
-                      size={16}
-                      style={{
-                        position: "absolute",
-                        left: 10,
-                        top: 12,
-                        color: "#94a3b8",
-                      }}
-                    />
-                    <Input
-                      style={{ paddingLeft: 34, minWidth: 260 }}
-                      placeholder="Tìm mã đơn, khách, món, ghi chú..."
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                    />
-                  </div>
-
-                  <Button
-                    variant={platformFilter === "all" ? "default" : "outline"}
-                    onClick={() => {
-                      setPlatformFilter("all");
-                      setNewOrderCount(0);
-                      stopTitleFlash();
-                    }}
-                  >
-                    Tất cả
-                  </Button>
-                  <Button
-                    variant={platformFilter === "grab" ? "default" : "outline"}
-                    onClick={() => setPlatformFilter("grab")}
-                  >
-                    Grab
-                  </Button>
-                  <Button
-                    variant={platformFilter === "shopee" ? "default" : "outline"}
-                    onClick={() => setPlatformFilter("shopee")}
-                  >
-                    Shopee
-                  </Button>
-                  <Button
-                    variant={platformFilter === "xanhngon" ? "default" : "outline"}
-                    onClick={() => setPlatformFilter("xanhngon")}
-                  >
-                    Xanh Ngon
-                  </Button>
-                  <Button
-                    variant={orderStateFilter === "doing" ? "default" : "outline"}
-                    onClick={() => setOrderStateFilter("doing")}
-                  >
-                    Đang làm
-                  </Button>
-                  <Button
-                    variant={orderStateFilter === "done" ? "default" : "outline"}
-                    onClick={() => setOrderStateFilter("done")}
-                  >
-                    Đã xong
-                  </Button>
-                  <Button
-                    variant={orderStateFilter === "all" ? "default" : "outline"}
-                    onClick={() => setOrderStateFilter("all")}
-                  >
-                    Tất cả trạng thái
-                  </Button>
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  justifyContent: "space-between",
+                  gap: 16,
+                }}
+              >
+                <div>
+                  <h1 style={{ margin: 0, fontSize: 32 }}>Bảng bếp realtime</h1>
+                  <p style={{ margin: "8px 0 0", color: "#64748b" }}>
+                    Đơn hàng hiển thị realtime từ Supabase, tick món khi làm xong.
+                  </p>
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    flexWrap: "wrap",
-                    gap: 8,
-                    alignItems: "center",
-                  }}
-                >
-                  <Input
-                    type="date"
-                    value={dateFilter}
-                    onChange={(e) => setDateFilter(e.target.value)}
-                    style={{ width: 170 }}
-                  />
-                  <Button
-                    variant={dateFilter === getTodayDateKey() ? "default" : "outline"}
-                    onClick={() => setDateFilter(getTodayDateKey())}
-                  >
-                    Hôm nay
-                  </Button>
-                  <Button variant="outline" onClick={() => setDateFilter("")}>
-                    Bỏ lọc ngày
-                  </Button>
-
-                  <Button
-                    variant={soundEnabled ? "default" : "outline"}
-                    onClick={async () => {
-                      if (soundEnabled) {
-                        setSoundEnabled(false);
-                        if (typeof window !== "undefined") {
-                          window.localStorage.setItem("kitchen_sound_enabled", "0");
-                        }
-                        return;
-                      }
-                      await unlockAudio();
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 8,
+                      alignItems: "center",
                     }}
                   >
-                    {soundEnabled ? (
-                      <Bell size={16} style={{ marginRight: 6 }} />
-                    ) : (
-                      <BellOff size={16} style={{ marginRight: 6 }} />
-                    )}
-                    {soundEnabled ? "Tắt chuông" : "Bật chuông"}
-                    {newOrderCount > 0 ? ` (${newOrderCount})` : ""}
-                  </Button>
+                    <div style={{ position: "relative", minWidth: 240 }}>
+                      <Search
+                        size={16}
+                        style={{
+                          position: "absolute",
+                          left: 10,
+                          top: 12,
+                          color: "#94a3b8",
+                        }}
+                      />
+                      <Input
+                        style={{ paddingLeft: 34, minWidth: 260 }}
+                        placeholder="Tìm mã đơn, khách, món, ghi chú..."
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                      />
+                    </div>
+
+                    <Button
+                      variant={platformFilter === "all" ? "default" : "outline"}
+                      onClick={() => {
+                        setPlatformFilter("all");
+                      }}
+                    >
+                      Tất cả
+                    </Button>
+                    <Button
+                      variant={platformFilter === "grab" ? "default" : "outline"}
+                      onClick={() => setPlatformFilter("grab")}
+                    >
+                      Grab
+                    </Button>
+                    <Button
+                      variant={platformFilter === "shopee" ? "default" : "outline"}
+                      onClick={() => setPlatformFilter("shopee")}
+                    >
+                      Shopee
+                    </Button>
+                    <Button
+                      variant={platformFilter === "xanhngon" ? "default" : "outline"}
+                      onClick={() => setPlatformFilter("xanhngon")}
+                    >
+                      Xanh Ngon
+                    </Button>
+                    <Button
+                      variant={orderStateFilter === "doing" ? "default" : "outline"}
+                      onClick={() => setOrderStateFilter("doing")}
+                    >
+                      Đang làm
+                    </Button>
+                    <Button
+                      variant={orderStateFilter === "done" ? "default" : "outline"}
+                      onClick={() => setOrderStateFilter("done")}
+                    >
+                      Đã xong
+                    </Button>
+                    <Button
+                      variant={orderStateFilter === "all" ? "default" : "outline"}
+                      onClick={() => setOrderStateFilter("all")}
+                    >
+                      Tất cả trạng thái
+                    </Button>
+                  </div>
 
                   <div
                     style={{
                       display: "flex",
-                      alignItems: "center",
+                      flexWrap: "wrap",
                       gap: 8,
-                      padding: "0 10px",
-                      background: "#fff",
-                      border: "1px solid #cbd5e1",
-                      borderRadius: 10,
-                      height: 42,
+                      alignItems: "center",
                     }}
                   >
-                    <span
-                      style={{
-                        fontSize: 13,
-                        fontWeight: 700,
-                        color: "#334155",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      Âm lượng
-                    </span>
-                    <input
-                      type="range"
-                      min="0.05"
-                      max="0.5"
-                      step="0.01"
-                      value={soundVolume}
-                      onChange={(e) => setSoundVolume(Number(e.target.value))}
-                      style={{ width: 120 }}
+                    <Input
+                      type="date"
+                      value={dateFilter}
+                      onChange={(e) => setDateFilter(e.target.value)}
+                      style={{ width: 170 }}
                     />
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: "#64748b",
-                        minWidth: 28,
-                        textAlign: "right",
+                    <Button
+                      variant={dateFilter === getTodayDateKey() ? "default" : "outline"}
+                      onClick={() => setDateFilter(getTodayDateKey())}
+                    >
+                      Hôm nay
+                    </Button>
+                    <Button variant="outline" onClick={() => setDateFilter("")}>
+                      Bỏ lọc ngày
+                    </Button>
+
+                    <Button
+                      variant={soundEnabled ? "default" : "outline"}
+                      onClick={async () => {
+                        if (soundEnabled) {
+                          setSoundEnabled(false);
+                          stopContinuousRinging();
+                          if (typeof window !== "undefined") {
+                            window.localStorage.setItem("kitchen_sound_enabled", "0");
+                          }
+                          return;
+                        }
+                        await unlockAudio();
                       }}
                     >
-                      {Math.round(soundVolume * 100)}
-                    </span>
-                  </div>
+                      {soundEnabled ? (
+                        <Bell size={16} style={{ marginRight: 6 }} />
+                      ) : (
+                        <BellOff size={16} style={{ marginRight: 6 }} />
+                      )}
+                      {soundEnabled ? "Tắt chuông" : "Bật chuông"}
+                      {newOrderCount > 0 ? ` (${newOrderCount})` : ""}
+                    </Button>
 
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setNewOrderCount(0);
-                      stopTitleFlash();
-                    }}
-                  >
-                    Đã xem đơn mới
-                  </Button>
-
-                  <Button variant="outline" onClick={() => window.location.reload()}>
-                    <RefreshCcw size={16} style={{ marginRight: 6 }} />
-                    Tải lại
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {error ? (
-            <Card
-              style={{
-                border: "1px solid #fecaca",
-                background: "#fef2f2",
-                marginBottom: 16,
-              }}
-            >
-              <CardContent style={{ color: "#b91c1c" }}>{error}</CardContent>
-            </Card>
-          ) : null}
-
-          {loading ? (
-            <Card style={{ marginBottom: 16 }}>
-              <CardContent>Đang tải dữ liệu...</CardContent>
-            </Card>
-          ) : null}
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(0, 1.65fr) minmax(420px, 0.95fr)",
-              gap: 16,
-              alignItems: "start",
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
-              <div
-                style={{
-                  height: 610,
-                  minHeight: 610,
-                  maxHeight: 610,
-                  overflowY: "auto",
-                  overflowX: "hidden",
-                  paddingRight: 6,
-                  borderRadius: 18,
-                }}
-              >
-                <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
-                  {filteredOrders.map((order) => {
-                    const dishes = Array.isArray(order.dishes) ? order.dishes : [];
-                    const allDone = order._allDone;
-                    const { totalItems, doneItems } = getOrderProgress(order);
-                    const kitchenDone = order._kitchenDone;
-                    const waitingMinutes = order._waitingMinutes;
-                    const isNew = order._isNew;
-                    const theme = platformTheme(order.nen_tang);
-                    const isHighlightedByGroup = activeDishKey
-                      ? orderContainsGroupedDish(order, activeDishKey)
-                      : false;
-
-                    const completedTheme = kitchenDone
-                      ? {
-                          style: {
-                            border: "2px solid #cbd5e1",
-                            background: "#e5e7eb",
-                            color: "#475569",
-                          },
-                          badgeStyle: { background: "#64748b", color: "#fff" },
-                          doneStyle: { background: "#cbd5e1", color: "#334155" },
-                          actionStyle: {
-                            background: "#64748b",
-                            color: "#fff",
-                            borderColor: "#64748b",
-                          },
-                          accentStyle: { color: "#475569" },
-                        }
-                      : theme;
-
-                    const activeTheme = completedTheme;
-
-                    return (
-                      <Card
-                        key={order.id}
-                        ref={(node) => {
-                          if (node) orderRefs.current[order.id] = node;
-                          else delete orderRefs.current[order.id];
-                        }}
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: "0 10px",
+                        background: "#fff",
+                        border: "1px solid #cbd5e1",
+                        borderRadius: 10,
+                        height: 42,
+                      }}
+                    >
+                      <span
                         style={{
-                          ...activeTheme.style,
-                          opacity: kitchenDone ? 0.9 : 1,
-                          borderColor:
-                            activeOrderId === order.id
-                              ? "#8b5cf6"
-                              : isHighlightedByGroup
-                              ? "#0ea5e9"
-                              : isNew && !kitchenDone
-                              ? "#f59e0b"
-                              : activeTheme.style.border?.split(" ").pop(),
-                        }}
-                      >
-                        <CardHeader
-                          style={{ cursor: "pointer" }}
-                          onClick={() => {
-                            const nextActiveOrderId =
-                              activeOrderId === order.id ? null : order.id;
-
-                            setActiveOrderId(nextActiveOrderId);
-                            if (activeDishKey) setActiveDishKey(null);
-
-                            if (nextActiveOrderId) {
-                              requestAnimationFrame(() => {
-                                scrollToFirstGroupedDishForOrder(order);
-                              });
-                            }
-                          }}
-                        >
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              gap: 12,
-                            }}
-                          >
-                            <div>
-                              <CardTitle style={{ fontSize: 26 }}>
-                                {order.ma_noi_bo || order.id}
-                              </CardTitle>
-                              <div
-                                style={{
-                                  marginTop: 8,
-                                  display: "flex",
-                                  flexWrap: "wrap",
-                                  gap: 8,
-                                }}
-                              >
-                                <Badge style={activeTheme.badgeStyle}>{theme.label}</Badge>
-                                {isNew ? (
-                                  <Badge style={{ background: "#f59e0b", color: "#fff" }}>
-                                    Đơn mới
-                                  </Badge>
-                                ) : null}
-                                <Badge variant={statusVariant(order.trang_thai)}>
-                                  {order.trang_thai || "UNKNOWN"}
-                                </Badge>
-                                {kitchenDone ? (
-                                  <Badge variant="secondary">Đã xong đơn</Badge>
-                                ) : null}
-                              </div>
-                            </div>
-
-                            <div
-                              style={{
-                                textAlign: "right",
-                                color: kitchenDone ? "#64748b" : "#475569",
-                              }}
-                            >
-                              <div style={{ fontSize: 22 }}>
-                                {doneItems}/{totalItems} phần
-                              </div>
-                              <div>{allDone ? "Sẵn sàng trả đơn" : "Đang làm"}</div>
-                            </div>
-                          </div>
-
-                          <div
-                            style={{
-                              display: "grid",
-                              gap: 8,
-                              marginTop: 14,
-                              fontSize: 18,
-                            }}
-                          >
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 8,
-                                ...activeTheme.accentStyle,
-                              }}
-                            >
-                              <Store size={16} />
-                              {formatPlatformOrderCode(order.nen_tang, order.ma_don_san)}
-                            </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <Phone size={16} />
-                              {order.khach_hang || "Không tên"} - {order.sdt || "Không SĐT"}
-                            </div>
-                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <Clock3 size={16} />
-                              {formatTime(order.thoi_gian)}
-                            </div>
-                            <div
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: 8,
-                                fontWeight: 700,
-                                ...waitingTone(waitingMinutes),
-                              }}
-                            >
-                              <AlarmClock size={16} />
-                              Chờ {waitingMinutes} phút
-                            </div>
-                          </div>
-                        </CardHeader>
-
-                        <CardContent>
-                          <Separator />
-
-                          <ScrollArea style={{ maxHeight: 260, paddingRight: 6 }}>
-                            <div
-                              style={{
-                                display: "grid",
-                                gridTemplateColumns:
-                                  "repeat(auto-fit, minmax(180px, 1fr))",
-                                gap: 12,
-                              }}
-                            >
-                              {dishes.flatMap((dish, index) => {
-                                const qty =
-                                  Number(dish?.so_luong ?? dish?.quantity ?? 0) || 0;
-                                const doneList = ensureDoneList(dish);
-
-                                return Array.from({ length: qty }).map((_, portionIndex) => {
-                                  const itemKey = `${buildDishKey(
-                                    order.id,
-                                    dish,
-                                    index
-                                  )}__${portionIndex}`;
-                                  const isDone = !!doneList[portionIndex];
-
-                                  return (
-                                    <button
-                                      key={itemKey}
-                                      type="button"
-                                      disabled={!!pendingOrderIds[order.id]}
-                                      onClick={() => {
-                                        handleDishCardToggle(
-                                          order.id,
-                                          index,
-                                          portionIndex,
-                                          isDone,
-                                          qty
-                                        );
-                                      }}
-                                      style={{
-                                        width: "100%",
-                                        background: "rgba(255,255,255,0.9)",
-                                        border: "1px solid #e2e8f0",
-                                        borderRadius: 18,
-                                        padding: 14,
-                                        textAlign: "left",
-                                        cursor: !!pendingOrderIds[order.id]
-                                          ? "not-allowed"
-                                          : "pointer",
-                                      }}
-                                    >
-                                      <div
-                                        style={{
-                                          display: "flex",
-                                          gap: 10,
-                                          alignItems: "flex-start",
-                                        }}
-                                      >
-                                        <Checkbox
-                                          checked={isDone}
-                                          disabled={!!pendingOrderIds[order.id]}
-                                          onCheckedChange={(checked) =>
-                                            updateDishPortion(
-                                              order.id,
-                                              index,
-                                              portionIndex,
-                                              Boolean(checked),
-                                              qty
-                                            )
-                                          }
-                                          style={{ marginTop: 4 }}
-                                        />
-
-                                        <div style={{ flex: 1 }}>
-                                          <div
-                                            style={{
-                                              display: "flex",
-                                              justifyContent: "space-between",
-                                              gap: 10,
-                                            }}
-                                          >
-                                            <div>
-                                              <div
-                                                style={{
-                                                  fontWeight: 700,
-                                                  fontSize: 16,
-                                                  color: isDone ? "#94a3b8" : "#0f172a",
-                                                  textDecoration: isDone
-                                                    ? "line-through"
-                                                    : "none",
-                                                }}
-                                              >
-                                                {dish?.ten_mon ||
-                                                  dish?.name ||
-                                                  "Không tên món"}
-                                              </div>
-                                              <div
-                                                style={{
-                                                  color: "#94a3b8",
-                                                  fontSize: 12,
-                                                }}
-                                              >
-                                                Phần {portionIndex + 1}
-                                              </div>
-                                            </div>
-                                            {isDone ? (
-                                              <Badge style={activeTheme.doneStyle}>Xong</Badge>
-                                            ) : null}
-                                          </div>
-
-                                          {(dish?.tuy_chon || []).length > 0 ? (
-                                            <div
-                                              style={{
-                                                marginTop: 10,
-                                                display: "flex",
-                                                flexWrap: "wrap",
-                                                gap: 8,
-                                              }}
-                                            >
-                                              {(dish?.tuy_chon || []).map((opt, optIndex) => (
-                                                <Badge
-                                                  key={`${itemKey}-${optIndex}`}
-                                                  variant="outline"
-                                                  onClick={(e) => e.stopPropagation()}
-                                                >
-                                                  {opt}
-                                                </Badge>
-                                              ))}
-                                            </div>
-                                          ) : null}
-
-                                          {dish?.ghi_chu ? (
-                                            <div
-                                              onClick={(e) => e.stopPropagation()}
-                                              style={{
-                                                marginTop: 10,
-                                                background: "#fef3c7",
-                                                color: "#92400e",
-                                                borderRadius: 12,
-                                                padding: 10,
-                                                fontSize: 13,
-                                              }}
-                                            >
-                                              <div
-                                                style={{
-                                                  fontWeight: 700,
-                                                  marginBottom: 4,
-                                                  display: "flex",
-                                                  alignItems: "center",
-                                                  gap: 6,
-                                                }}
-                                              >
-                                                <StickyNote size={14} />
-                                                Ghi chú
-                                              </div>
-                                              <div>{dish.ghi_chu}</div>
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                      </div>
-                                    </button>
-                                  );
-                                });
-                              })}
-                            </div>
-                          </ScrollArea>
-
-                          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-                            <Button
-                              style={{ ...activeTheme.actionStyle, flex: 1 }}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                markOrderDone(order.id);
-                              }}
-                              disabled={
-                                dishes.length === 0 ||
-                                !allDone ||
-                                !!pendingOrderIds[order.id]
-                              }
-                            >
-                              Xác nhận xong đơn
-                            </Button>
-
-                            <Button
-                              variant="outline"
-                              disabled={!!pendingOrderIds[order.id]}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                resetOrder(order.id);
-                              }}
-                            >
-                              Reset
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div
-                style={{
-                  overflowX: "auto",
-                  overflowY: "hidden",
-                  paddingTop: 2,
-                  paddingBottom: 6,
-                  width: "100%",
-                  WebkitOverflowScrolling: "touch",
-                }}
-              >
-                <div
-                  style={{
-                    display: "inline-flex",
-                    flexWrap: "nowrap",
-                    gap: 10,
-                    minWidth: "max-content",
-                  }}
-                >
-                  {filteredOrders.map((order) => {
-                    const miniStyle = miniOrderBoxStyle(order);
-                    const activeMiniStyle = activeMiniOrderBoxStyle(order);
-
-                    const code = formatPlatformOrderCode(
-                      order.nen_tang,
-                      order.ma_don_san
-                    );
-
-                    const waiting = order?._waitingMinutes || 0;
-                    const isActive = activeOrderId === order.id;
-
-                    return (
-                      <button
-                        key={`mini-${order.id}`}
-                        type="button"
-                        onClick={() => {
-                          const node = orderRefs.current[order.id];
-                          if (node && typeof node.scrollIntoView === "function") {
-                            node.scrollIntoView({
-                              behavior: "auto",
-                              block: "center",
-                            });
-                          }
-
-                          setActiveOrderId(order.id);
-                          if (activeDishKey) setActiveDishKey(null);
-
-                          requestAnimationFrame(() => {
-                            scrollToFirstGroupedDishForOrder(order);
-                          });
-                        }}
-                        style={{
-                          minWidth: 118,
-                          flex: "0 0 auto",
-                          borderRadius: 14,
-                          padding: "12px 12px",
-                          textAlign: "left",
+                          fontSize: 13,
                           fontWeight: 700,
-                          cursor: "pointer",
-                          border: isActive
-                            ? activeMiniStyle.border
-                            : miniStyle.border,
-                          background: isActive
-                            ? activeMiniStyle.background
-                            : miniStyle.background,
-                          color: isActive
-                            ? activeMiniStyle.color
-                            : miniStyle.color,
-                          boxShadow: isActive
-                            ? activeMiniStyle.boxShadow
-                            : "none",
-                          transform: isActive
-                            ? "translateY(-2px) scale(1.02)"
-                            : "none",
-                          transition: "all 0.18s ease",
+                          color: "#334155",
+                          whiteSpace: "nowrap",
                         }}
                       >
-                        <div
-                          style={{
-                            fontSize: 15,
-                            lineHeight: 1.2,
-                            whiteSpace: "nowrap",
-                          }}
-                        >
-                          {code}
-                        </div>
+                        Âm lượng
+                      </span>
+                      <input
+                        type="range"
+                        min="0.05"
+                        max="0.5"
+                        step="0.01"
+                        value={soundVolume}
+                        onChange={(e) => setSoundVolume(Number(e.target.value))}
+                        style={{ width: 120 }}
+                      />
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: "#64748b",
+                          minWidth: 28,
+                          textAlign: "right",
+                        }}
+                      >
+                        {Math.round(soundVolume * 100)}
+                      </span>
+                    </div>
 
-                        <div
-                          style={{
-                            marginTop: 10,
-                            fontSize: 13,
-                            fontWeight: isActive ? 700 : 600,
-                            opacity: 1,
-                            color: isActive
-                              ? activeMiniStyle.waitColor
-                              : undefined,
-                          }}
-                        >
-                          Chờ {waiting}’
-                        </div>
-                      </button>
-                    );
-                  })}
+                    <Button variant="outline" onClick={() => window.location.reload()}>
+                      <RefreshCcw size={16} style={{ marginRight: 6 }} />
+                      Tải lại
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <Card
+            {error ? (
+              <Card
+                style={{
+                  border: "1px solid #fecaca",
+                  background: "#fef2f2",
+                  marginBottom: 16,
+                }}
+              >
+                <CardContent style={{ color: "#b91c1c" }}>{error}</CardContent>
+              </Card>
+            ) : null}
+
+            {loading ? (
+              <Card style={{ marginBottom: 16 }}>
+                <CardContent>Đang tải dữ liệu...</CardContent>
+              </Card>
+            ) : null}
+
+            <div
               style={{
-                position: "sticky",
-                top: 12,
-                height: "fit-content",
-                alignSelf: "start",
+                display: "grid",
+                gridTemplateColumns: "minmax(0, 1.65fr) minmax(420px, 0.95fr)",
+                gap: 16,
+                alignItems: "start",
               }}
             >
-              <CardHeader>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <ListOrdered size={18} />
-                  <CardTitle style={{ fontSize: 22 }}>
-                    Tổng hợp món đang làm
-                  </CardTitle>
-                </div>
-                <p style={{ color: "#64748b", margin: "8px 0 0" }}>
-                  Gom các món giống nhau từ tất cả đơn đang hiển thị để bếp dễ chế
-                  biến theo lô.
-                </p>
-              </CardHeader>
-
-              <CardContent>
-                <ScrollArea
-                  ref={groupedScrollRef}
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
+                <div
                   style={{
                     height: 610,
                     minHeight: 610,
                     maxHeight: 610,
+                    overflowY: "auto",
+                    overflowX: "hidden",
                     paddingRight: 6,
+                    borderRadius: 18,
                   }}
                 >
-                  <div style={{ display: "grid", gap: 12 }}>
-                    {groupedDishes.length === 0 ? (
-                      <div
-                        style={{
-                          border: "1px dashed #cbd5e1",
-                          borderRadius: 18,
-                          padding: 16,
-                          color: "#64748b",
-                        }}
-                      >
-                        Chưa có món nào để tổng hợp.
-                      </div>
-                    ) : (
-                      groupedDishes.map((group) => {
-                        const activeOrder = activeOrderId
-                          ? filteredOrders.find((o) => o.id === activeOrderId)
-                          : null;
-                        const orderDishKeys = activeOrder
-                          ? getPendingDishKeysForOrder(activeOrder)
-                          : [];
-                        const isOrderHighlighted =
-                          !!activeOrder && orderDishKeys.includes(group.key);
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
+                    {filteredOrders.map((order) => {
+                      const dishes = Array.isArray(order.dishes) ? order.dishes : [];
+                      const allDone = order._allDone;
+                      const { totalItems, doneItems } = getOrderProgress(order);
+                      const kitchenDone = order._kitchenDone;
+                      const waitingMinutes = order._waitingMinutes;
+                      const isNew = order._isNew;
+                      const theme = platformTheme(order.nen_tang);
+                      const isHighlightedByGroup = activeDishKey
+                        ? orderContainsGroupedDish(order, activeDishKey)
+                        : false;
 
-                        const activeOrderCode = activeOrder
-                          ? formatPlatformOrderCode(
-                              activeOrder.nen_tang,
-                              activeOrder.ma_don_san ||
-                                activeOrder.ma_noi_bo ||
-                                activeOrder.id
-                            )
-                          : null;
+                      const completedTheme = kitchenDone
+                        ? {
+                            style: {
+                              border: "2px solid #cbd5e1",
+                              background: "#e5e7eb",
+                              color: "#475569",
+                            },
+                            badgeStyle: { background: "#64748b", color: "#fff" },
+                            doneStyle: { background: "#cbd5e1", color: "#334155" },
+                            actionStyle: {
+                              background: "#64748b",
+                              color: "#fff",
+                              borderColor: "#64748b",
+                            },
+                            accentStyle: { color: "#475569" },
+                          }
+                        : theme;
 
-                        const hasActiveOrderNote =
-                          !!activeOrder &&
-                          group.notes.some((note) => activeOrderCode === note.orderCode);
+                      const activeTheme = completedTheme;
 
-                        return (
-                          <button
-                            key={group.key}
-                            ref={(node) => {
-                              if (node) groupedDishRefs.current[group.key] = node;
-                              else delete groupedDishRefs.current[group.key];
-                            }}
-                            type="button"
+                      return (
+                        <Card
+                          key={order.id}
+                          ref={(node) => {
+                            if (node) orderRefs.current[order.id] = node;
+                            else delete orderRefs.current[order.id];
+                          }}
+                          style={{
+                            ...activeTheme.style,
+                            opacity: kitchenDone ? 0.9 : 1,
+                            borderColor:
+                              activeOrderId === order.id
+                                ? "#8b5cf6"
+                                : isHighlightedByGroup
+                                ? "#0ea5e9"
+                                : isNew && !kitchenDone
+                                ? "#f59e0b"
+                                : activeTheme.style.border?.split(" ").pop(),
+                          }}
+                        >
+                          <CardHeader
+                            style={{ cursor: "pointer" }}
                             onClick={() => {
-                              setActiveOrderId(null);
-                              const nextKey =
-                                activeDishKey === group.key ? null : group.key;
-                              setActiveDishKey(nextKey);
-                              if (nextKey) {
-                                requestAnimationFrame(() =>
-                                  scrollToOldestPendingOrderForDish(nextKey)
-                                );
+                              const nextActiveOrderId =
+                                activeOrderId === order.id ? null : order.id;
+
+                              setActiveOrderId(nextActiveOrderId);
+                              if (activeDishKey) setActiveDishKey(null);
+
+                              markOrderAsSeen(String(order.id));
+
+                              if (nextActiveOrderId) {
+                                requestAnimationFrame(() => {
+                                  scrollToFirstGroupedDishForOrder(order);
+                                });
                               }
-                            }}
-                            style={{
-                              width: "100%",
-                              textAlign: "left",
-                              borderRadius: 18,
-                              scrollMarginTop: 20,
-                              border: `1px solid ${
-                                activeDishKey === group.key
-                                  ? "#0ea5e9"
-                                  : isOrderHighlighted
-                                  ? "#8b5cf6"
-                                  : "#e2e8f0"
-                              }`,
-                              background:
-                                activeDishKey === group.key
-                                  ? "#f0f9ff"
-                                  : isOrderHighlighted
-                                  ? "#f5f3ff"
-                                  : "#f8fafc",
-                              padding: 14,
-                              cursor: "pointer",
                             }}
                           >
                             <div
@@ -2041,224 +1584,755 @@ export default function App() {
                               }}
                             >
                               <div>
-                                <div style={{ fontWeight: 700, fontSize: 18 }}>
-                                  {group.name}
+                                <CardTitle style={{ fontSize: 26 }}>
+                                  {order.ma_noi_bo || order.id}
+                                </CardTitle>
+                                <div
+                                  style={{
+                                    marginTop: 8,
+                                    display: "flex",
+                                    flexWrap: "wrap",
+                                    gap: 8,
+                                  }}
+                                >
+                                  <Badge style={activeTheme.badgeStyle}>{theme.label}</Badge>
+                                  {isNew ? (
+                                    <Badge style={{ background: "#f59e0b", color: "#fff" }}>
+                                      Đơn mới
+                                    </Badge>
+                                  ) : null}
+                                  <Badge variant={statusVariant(order.trang_thai)}>
+                                    {order.trang_thai || "UNKNOWN"}
+                                  </Badge>
+                                  {kitchenDone ? (
+                                    <Badge variant="secondary">Đã xong đơn</Badge>
+                                  ) : null}
                                 </div>
-                                {Number.isFinite(group.oldestPendingTimeValue) &&
-                                group.pendingQuantity > 0 ? (
-                                  <div style={{ marginTop: 6 }}>
-                                    <span
-                                      style={{
-                                        display: "inline-block",
-                                        background: "#e2e8f0",
-                                        color: "#0f172a",
-                                        borderRadius: 999,
-                                        padding: "5px 10px",
-                                        fontSize: 12,
-                                        fontWeight: 700,
-                                      }}
-                                    >
-                                      {`Chờ lâu nhất: ${Math.max(
-                                        0,
-                                        Math.floor(
-                                          (now - group.oldestPendingTimeValue) / 60000
-                                        )
-                                      )} phút`}
-                                    </span>
-                                  </div>
-                                ) : null}
-
-                                {group.options.length > 0 ? (
-                                  <div
-                                    style={{
-                                      marginTop: 10,
-                                      display: "flex",
-                                      flexWrap: "wrap",
-                                      gap: 8,
-                                    }}
-                                  >
-                                    {Object.entries(
-                                      group.options.reduce((acc, opt) => {
-                                        acc[opt] = (acc[opt] || 0) + 1;
-                                        return acc;
-                                      }, {})
-                                    )
-                                      .sort((a, b) => b[1] - a[1])
-                                      .map(([opt, qty], index) => (
-                                        <Badge key={`${group.key}-${index}`} variant="outline">
-                                          {opt}{" "}
-                                          <span
-                                            style={{ fontWeight: 700, color: "#475569" }}
-                                          >
-                                            (x{qty})
-                                          </span>
-                                        </Badge>
-                                      ))}
-                                  </div>
-                                ) : null}
                               </div>
 
-                              <div style={{ textAlign: "right" }}>
-                                <div style={{ fontSize: 30, fontWeight: 700 }}>
-                                  {group.pendingQuantity}
+                              <div
+                                style={{
+                                  textAlign: "right",
+                                  color: kitchenDone ? "#64748b" : "#475569",
+                                }}
+                              >
+                                <div style={{ fontSize: 22 }}>
+                                  {doneItems}/{totalItems} phần
                                 </div>
-                                <div style={{ color: "#64748b", fontSize: 13 }}>
-                                  cần làm
-                                </div>
+                                <div>{allDone ? "Sẵn sàng trả đơn" : "Đang làm"}</div>
                               </div>
                             </div>
 
                             <div
                               style={{
                                 display: "grid",
-                                gridTemplateColumns: "repeat(3, 1fr)",
                                 gap: 8,
-                                marginTop: 12,
+                                marginTop: 14,
+                                fontSize: 18,
                               }}
                             >
                               <div
                                 style={{
-                                  background: "#fff",
-                                  borderRadius: 12,
-                                  padding: 10,
-                                  textAlign: "center",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  ...activeTheme.accentStyle,
                                 }}
                               >
-                                <div style={{ fontWeight: 700 }}>{group.totalQuantity}</div>
-                                <div style={{ fontSize: 12, color: "#64748b" }}>
-                                  Tổng SL
-                                </div>
+                                <Store size={16} />
+                                {formatPlatformOrderCode(order.nen_tang, order.ma_don_san)}
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <Phone size={16} />
+                                {order.khach_hang || "Không tên"} - {order.sdt || "Không SĐT"}
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <Clock3 size={16} />
+                                {formatTime(order.thoi_gian)}
                               </div>
                               <div
                                 style={{
-                                  background: "#fff",
-                                  borderRadius: 12,
-                                  padding: 10,
-                                  textAlign: "center",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  fontWeight: 700,
+                                  ...waitingTone(waitingMinutes),
                                 }}
                               >
-                                <div style={{ fontWeight: 700, color: "#d97706" }}>
-                                  {group.pendingQuantity}
-                                </div>
-                                <div style={{ fontSize: 12, color: "#64748b" }}>
-                                  Chưa xong
-                                </div>
-                              </div>
-                              <div
-                                style={{
-                                  background: "#fff",
-                                  borderRadius: 12,
-                                  padding: 10,
-                                  textAlign: "center",
-                                }}
-                              >
-                                <div style={{ fontWeight: 700, color: "#059669" }}>
-                                  {group.doneQuantity}
-                                </div>
-                                <div style={{ fontSize: 12, color: "#64748b" }}>
-                                  Đã xong
-                                </div>
+                                <AlarmClock size={16} />
+                                Chờ {waitingMinutes} phút
                               </div>
                             </div>
+                          </CardHeader>
 
-                            {group.notes.length > 0 ? (
+                          <CardContent>
+                            <Separator />
+
+                            <ScrollArea style={{ maxHeight: 260, paddingRight: 6 }}>
                               <div
                                 style={{
+                                  display: "grid",
+                                  gridTemplateColumns:
+                                    "repeat(auto-fit, minmax(180px, 1fr))",
+                                  gap: 12,
+                                }}
+                              >
+                                {dishes.flatMap((dish, index) => {
+                                  const qty =
+                                    Number(dish?.so_luong ?? dish?.quantity ?? 0) || 0;
+                                  const doneList = ensureDoneList(dish);
+
+                                  return Array.from({ length: qty }).map((_, portionIndex) => {
+                                    const itemKey = `${buildDishKey(
+                                      order.id,
+                                      dish,
+                                      index
+                                    )}__${portionIndex}`;
+                                    const isDone = !!doneList[portionIndex];
+
+                                    return (
+                                      <button
+                                        key={itemKey}
+                                        type="button"
+                                        disabled={!!pendingOrderIds[order.id]}
+                                        onClick={() => {
+                                          handleDishCardToggle(
+                                            order.id,
+                                            index,
+                                            portionIndex,
+                                            isDone,
+                                            qty
+                                          );
+                                        }}
+                                        style={{
+                                          width: "100%",
+                                          background: "rgba(255,255,255,0.9)",
+                                          border: "1px solid #e2e8f0",
+                                          borderRadius: 18,
+                                          padding: 14,
+                                          textAlign: "left",
+                                          cursor: !!pendingOrderIds[order.id]
+                                            ? "not-allowed"
+                                            : "pointer",
+                                        }}
+                                      >
+                                        <div
+                                          style={{
+                                            display: "flex",
+                                            gap: 10,
+                                            alignItems: "flex-start",
+                                          }}
+                                        >
+                                          <Checkbox
+                                            checked={isDone}
+                                            disabled={!!pendingOrderIds[order.id]}
+                                            onCheckedChange={(checked) =>
+                                              updateDishPortion(
+                                                order.id,
+                                                index,
+                                                portionIndex,
+                                                Boolean(checked),
+                                                qty
+                                              )
+                                            }
+                                            style={{ marginTop: 4 }}
+                                          />
+
+                                          <div style={{ flex: 1 }}>
+                                            <div
+                                              style={{
+                                                display: "flex",
+                                                justifyContent: "space-between",
+                                                gap: 10,
+                                              }}
+                                            >
+                                              <div>
+                                                <div
+                                                  style={{
+                                                    fontWeight: 700,
+                                                    fontSize: 16,
+                                                    color: isDone ? "#94a3b8" : "#0f172a",
+                                                    textDecoration: isDone
+                                                      ? "line-through"
+                                                      : "none",
+                                                  }}
+                                                >
+                                                  {dish?.ten_mon ||
+                                                    dish?.name ||
+                                                    "Không tên món"}
+                                                </div>
+                                                <div
+                                                  style={{
+                                                    color: "#94a3b8",
+                                                    fontSize: 12,
+                                                  }}
+                                                >
+                                                  Phần {portionIndex + 1}
+                                                </div>
+                                              </div>
+                                              {isDone ? (
+                                                <Badge style={activeTheme.doneStyle}>Xong</Badge>
+                                              ) : null}
+                                            </div>
+
+                                            {(dish?.tuy_chon || []).length > 0 ? (
+                                              <div
+                                                style={{
+                                                  marginTop: 10,
+                                                  display: "flex",
+                                                  flexWrap: "wrap",
+                                                  gap: 8,
+                                                }}
+                                              >
+                                                {(dish?.tuy_chon || []).map((opt, optIndex) => (
+                                                  <Badge
+                                                    key={`${itemKey}-${optIndex}`}
+                                                    variant="outline"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                  >
+                                                    {opt}
+                                                  </Badge>
+                                                ))}
+                                              </div>
+                                            ) : null}
+
+                                            {dish?.ghi_chu ? (
+                                              <div
+                                                onClick={(e) => e.stopPropagation()}
+                                                style={{
+                                                  marginTop: 10,
+                                                  background: "#fef3c7",
+                                                  color: "#92400e",
+                                                  borderRadius: 12,
+                                                  padding: 10,
+                                                  fontSize: 13,
+                                                }}
+                                              >
+                                                <div
+                                                  style={{
+                                                    fontWeight: 700,
+                                                    marginBottom: 4,
+                                                    display: "flex",
+                                                    alignItems: "center",
+                                                    gap: 6,
+                                                  }}
+                                                >
+                                                  <StickyNote size={14} />
+                                                  Ghi chú
+                                                </div>
+                                                <div>{dish.ghi_chu}</div>
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        </div>
+                                      </button>
+                                    );
+                                  });
+                                })}
+                              </div>
+                            </ScrollArea>
+
+                            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                              <Button
+                                style={{ ...activeTheme.actionStyle, flex: 1 }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  markOrderDone(order.id);
+                                }}
+                                disabled={
+                                  dishes.length === 0 ||
+                                  !allDone ||
+                                  !!pendingOrderIds[order.id]
+                                }
+                              >
+                                Xác nhận xong đơn
+                              </Button>
+
+                              <Button
+                                variant="outline"
+                                disabled={!!pendingOrderIds[order.id]}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  resetOrder(order.id);
+                                }}
+                              >
+                                Reset
+                              </Button>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    overflowX: "auto",
+                    overflowY: "hidden",
+                    paddingTop: 2,
+                    paddingBottom: 6,
+                    width: "100%",
+                    WebkitOverflowScrolling: "touch",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      flexWrap: "nowrap",
+                      gap: 10,
+                      minWidth: "max-content",
+                    }}
+                  >
+                    {filteredOrders.map((order) => {
+                      const miniStyle = miniOrderBoxStyle(order);
+                      const activeMiniStyle = activeMiniOrderBoxStyle(order);
+
+                      const code = formatPlatformOrderCode(
+                        order.nen_tang,
+                        order.ma_don_san
+                      );
+
+                      const waiting = order?._waitingMinutes || 0;
+                      const isActive = activeOrderId === order.id;
+                      const isUnseen = unseenOrderIds.map(String).includes(String(order.id));
+
+                      return (
+                        <button
+                          key={`mini-${order.id}`}
+                          type="button"
+                          onClick={() => {
+                            const node = orderRefs.current[order.id];
+                            if (node && typeof node.scrollIntoView === "function") {
+                              node.scrollIntoView({
+                                behavior: "auto",
+                                block: "center",
+                              });
+                            }
+
+                            setActiveOrderId(order.id);
+                            if (activeDishKey) setActiveDishKey(null);
+
+                            markOrderAsSeen(String(order.id));
+
+                            requestAnimationFrame(() => {
+                              scrollToFirstGroupedDishForOrder(order);
+                            });
+                          }}
+                          style={{
+                            minWidth: 118,
+                            flex: "0 0 auto",
+                            borderRadius: 14,
+                            padding: "12px 12px",
+                            textAlign: "left",
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            border: isActive
+                              ? activeMiniStyle.border
+                              : miniStyle.border,
+                            background: isActive
+                              ? activeMiniStyle.background
+                              : miniStyle.background,
+                            color: isActive
+                              ? activeMiniStyle.color
+                              : miniStyle.color,
+                            boxShadow: isActive
+                              ? activeMiniStyle.boxShadow
+                              : isUnseen
+                              ? "0 0 0 3px rgba(245,158,11,0.35), 0 0 20px rgba(245,158,11,0.45)"
+                              : "none",
+                            transform: isActive
+                              ? "translateY(-2px) scale(1.02)"
+                              : isUnseen
+                              ? "scale(1.03)"
+                              : "none",
+                            animation: isUnseen
+                              ? "newOrderBlink 1s ease-in-out infinite"
+                              : "none",
+                            transition: "all 0.18s ease",
+                            position: "relative",
+                          }}
+                        >
+                          {isUnseen ? (
+                            <div
+                              style={{
+                                position: "absolute",
+                                top: 6,
+                                right: 6,
+                                width: 12,
+                                height: 12,
+                                borderRadius: "50%",
+                                background: "#ef4444",
+                                boxShadow: "0 0 0 6px rgba(239,68,68,0.18)",
+                              }}
+                            />
+                          ) : null}
+
+                          <div
+                            style={{
+                              fontSize: 15,
+                              lineHeight: 1.2,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {code}
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop: 10,
+                              fontSize: 13,
+                              fontWeight: isActive ? 700 : 600,
+                              opacity: 1,
+                              color: isActive
+                                ? activeMiniStyle.waitColor
+                                : undefined,
+                            }}
+                          >
+                            Chờ {waiting}’
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <Card
+                style={{
+                  position: "sticky",
+                  top: 12,
+                  height: "fit-content",
+                  alignSelf: "start",
+                }}
+              >
+                <CardHeader>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <ListOrdered size={18} />
+                    <CardTitle style={{ fontSize: 22 }}>
+                      Tổng hợp món đang làm
+                    </CardTitle>
+                  </div>
+                  <p style={{ color: "#64748b", margin: "8px 0 0" }}>
+                    Gom các món giống nhau từ tất cả đơn đang hiển thị để bếp dễ chế
+                    biến theo lô.
+                  </p>
+                </CardHeader>
+
+                <CardContent>
+                  <ScrollArea
+                    ref={groupedScrollRef}
+                    style={{
+                      height: 610,
+                      minHeight: 610,
+                      maxHeight: 610,
+                      paddingRight: 6,
+                    }}
+                  >
+                    <div style={{ display: "grid", gap: 12 }}>
+                      {groupedDishes.length === 0 ? (
+                        <div
+                          style={{
+                            border: "1px dashed #cbd5e1",
+                            borderRadius: 18,
+                            padding: 16,
+                            color: "#64748b",
+                          }}
+                        >
+                          Chưa có món nào để tổng hợp.
+                        </div>
+                      ) : (
+                        groupedDishes.map((group) => {
+                          const activeOrder = activeOrderId
+                            ? filteredOrders.find((o) => o.id === activeOrderId)
+                            : null;
+                          const orderDishKeys = activeOrder
+                            ? getPendingDishKeysForOrder(activeOrder)
+                            : [];
+                          const isOrderHighlighted =
+                            !!activeOrder && orderDishKeys.includes(group.key);
+
+                          const activeOrderCode = activeOrder
+                            ? formatPlatformOrderCode(
+                                activeOrder.nen_tang,
+                                activeOrder.ma_don_san ||
+                                  activeOrder.ma_noi_bo ||
+                                  activeOrder.id
+                              )
+                            : null;
+
+                          const hasActiveOrderNote =
+                            !!activeOrder &&
+                            group.notes.some((note) => activeOrderCode === note.orderCode);
+
+                          return (
+                            <button
+                              key={group.key}
+                              ref={(node) => {
+                                if (node) groupedDishRefs.current[group.key] = node;
+                                else delete groupedDishRefs.current[group.key];
+                              }}
+                              type="button"
+                              onClick={() => {
+                                setActiveOrderId(null);
+                                const nextKey =
+                                  activeDishKey === group.key ? null : group.key;
+                                setActiveDishKey(nextKey);
+                                if (nextKey) {
+                                  requestAnimationFrame(() =>
+                                    scrollToOldestPendingOrderForDish(nextKey)
+                                  );
+                                }
+                              }}
+                              style={{
+                                width: "100%",
+                                textAlign: "left",
+                                borderRadius: 18,
+                                scrollMarginTop: 20,
+                                border: `1px solid ${
+                                  activeDishKey === group.key
+                                    ? "#0ea5e9"
+                                    : isOrderHighlighted
+                                    ? "#8b5cf6"
+                                    : "#e2e8f0"
+                                }`,
+                                background:
+                                  activeDishKey === group.key
+                                    ? "#f0f9ff"
+                                    : isOrderHighlighted
+                                    ? "#f5f3ff"
+                                    : "#f8fafc",
+                                padding: 14,
+                                cursor: "pointer",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  gap: 12,
+                                }}
+                              >
+                                <div>
+                                  <div style={{ fontWeight: 700, fontSize: 18 }}>
+                                    {group.name}
+                                  </div>
+                                  {Number.isFinite(group.oldestPendingTimeValue) &&
+                                  group.pendingQuantity > 0 ? (
+                                    <div style={{ marginTop: 6 }}>
+                                      <span
+                                        style={{
+                                          display: "inline-block",
+                                          background: "#e2e8f0",
+                                          color: "#0f172a",
+                                          borderRadius: 999,
+                                          padding: "5px 10px",
+                                          fontSize: 12,
+                                          fontWeight: 700,
+                                        }}
+                                      >
+                                        {`Chờ lâu nhất: ${Math.max(
+                                          0,
+                                          Math.floor(
+                                            (now - group.oldestPendingTimeValue) / 60000
+                                          )
+                                        )} phút`}
+                                      </span>
+                                    </div>
+                                  ) : null}
+
+                                  {group.options.length > 0 ? (
+                                    <div
+                                      style={{
+                                        marginTop: 10,
+                                        display: "flex",
+                                        flexWrap: "wrap",
+                                        gap: 8,
+                                      }}
+                                    >
+                                      {Object.entries(
+                                        group.options.reduce((acc, opt) => {
+                                          acc[opt] = (acc[opt] || 0) + 1;
+                                          return acc;
+                                        }, {})
+                                      )
+                                        .sort((a, b) => b[1] - a[1])
+                                        .map(([opt, qty], index) => (
+                                          <Badge key={`${group.key}-${index}`} variant="outline">
+                                            {opt}{" "}
+                                            <span
+                                              style={{ fontWeight: 700, color: "#475569" }}
+                                            >
+                                              (x{qty})
+                                            </span>
+                                          </Badge>
+                                        ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+
+                                <div style={{ textAlign: "right" }}>
+                                  <div style={{ fontSize: 30, fontWeight: 700 }}>
+                                    {group.pendingQuantity}
+                                  </div>
+                                  <div style={{ color: "#64748b", fontSize: 13 }}>
+                                    cần làm
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "grid",
+                                  gridTemplateColumns: "repeat(3, 1fr)",
+                                  gap: 8,
                                   marginTop: 12,
-                                  borderRadius: 12,
-                                  padding: 10,
-                                  background: hasActiveOrderNote ? "#fef3c7" : "#fffbeb",
-                                  border: hasActiveOrderNote
-                                    ? "1px solid #fcd34d"
-                                    : "none",
                                 }}
                               >
                                 <div
                                   style={{
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    color: "#92400e",
-                                    marginBottom: 6,
+                                    background: "#fff",
+                                    borderRadius: 12,
+                                    padding: 10,
+                                    textAlign: "center",
                                   }}
                                 >
-                                  Ghi chú liên quan
+                                  <div style={{ fontWeight: 700 }}>{group.totalQuantity}</div>
+                                  <div style={{ fontSize: 12, color: "#64748b" }}>
+                                    Tổng SL
+                                  </div>
                                 </div>
-                                <div style={{ display: "grid", gap: 6 }}>
-                                  {group.notes.slice(0, 5).map((note, index) => {
-                                    const noteTheme = platformTheme(note.platform);
-                                    const isActiveOrderNote =
-                                      activeOrder && activeOrderCode === note.orderCode;
-
-                                    return (
-                                      <div
-                                        key={`${group.key}-note-${index}`}
-                                        style={{
-                                          display: "flex",
-                                          alignItems: "flex-start",
-                                          gap: 8,
-                                          borderRadius: 8,
-                                          padding: "6px 8px",
-                                          background: isActiveOrderNote
-                                            ? "#fde68a"
-                                            : "transparent",
-                                          border: isActiveOrderNote
-                                            ? "1px solid #f59e0b"
-                                            : "none",
-                                          opacity: isActiveOrderNote ? 1 : 0.5,
-                                          color: "#92400e",
-                                        }}
-                                      >
-                                        <span
-                                          style={{
-                                            marginTop: 2,
-                                            display: "inline-block",
-                                            borderRadius: 999,
-                                            padding: "4px 8px",
-                                            fontSize: 11,
-                                            fontWeight: 700,
-                                            color: "#fff",
-                                            ...noteTheme.badgeStyle,
-                                          }}
-                                        >
-                                          {note.orderCode}
-                                        </span>
-                                        <span style={{ fontSize: 12 }}>{note.text}</span>
-                                      </div>
-                                    );
-                                  })}
-                                  {group.notes.length > 5 ? (
-                                    <div style={{ fontSize: 12 }}>
-                                      + {group.notes.length - 5} ghi chú khác
-                                    </div>
-                                  ) : null}
+                                <div
+                                  style={{
+                                    background: "#fff",
+                                    borderRadius: 12,
+                                    padding: 10,
+                                    textAlign: "center",
+                                  }}
+                                >
+                                  <div style={{ fontWeight: 700, color: "#d97706" }}>
+                                    {group.pendingQuantity}
+                                  </div>
+                                  <div style={{ fontSize: 12, color: "#64748b" }}>
+                                    Chưa xong
+                                  </div>
+                                </div>
+                                <div
+                                  style={{
+                                    background: "#fff",
+                                    borderRadius: 12,
+                                    padding: 10,
+                                    textAlign: "center",
+                                  }}
+                                >
+                                  <div style={{ fontWeight: 700, color: "#059669" }}>
+                                    {group.doneQuantity}
+                                  </div>
+                                  <div style={{ fontSize: 12, color: "#64748b" }}>
+                                    Đã xong
+                                  </div>
                                 </div>
                               </div>
-                            ) : null}
 
-                            <div
-                              style={{
-                                marginTop: 12,
-                                fontSize: 12,
-                                color: "#64748b",
-                              }}
-                            >
-                              {isOrderHighlighted
-                                ? "Món này thuộc đơn đang chọn"
-                                : activeDishKey === group.key
-                                ? "Đang highlight các đơn chứa món này"
-                                : "Bấm để highlight các đơn chứa món này"}
-                            </div>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-                </ScrollArea>
-              </CardContent>
-            </Card>
+                              {group.notes.length > 0 ? (
+                                <div
+                                  style={{
+                                    marginTop: 12,
+                                    borderRadius: 12,
+                                    padding: 10,
+                                    background: hasActiveOrderNote ? "#fef3c7" : "#fffbeb",
+                                    border: hasActiveOrderNote
+                                      ? "1px solid #fcd34d"
+                                      : "none",
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      fontWeight: 700,
+                                      color: "#92400e",
+                                      marginBottom: 6,
+                                    }}
+                                  >
+                                    Ghi chú liên quan
+                                  </div>
+                                  <div style={{ display: "grid", gap: 6 }}>
+                                    {group.notes.slice(0, 5).map((note, index) => {
+                                      const noteTheme = platformTheme(note.platform);
+                                      const isActiveOrderNote =
+                                        activeOrder && activeOrderCode === note.orderCode;
+
+                                      return (
+                                        <div
+                                          key={`${group.key}-note-${index}`}
+                                          style={{
+                                            display: "flex",
+                                            alignItems: "flex-start",
+                                            gap: 8,
+                                            borderRadius: 8,
+                                            padding: "6px 8px",
+                                            background: isActiveOrderNote
+                                              ? "#fde68a"
+                                              : "transparent",
+                                            border: isActiveOrderNote
+                                              ? "1px solid #f59e0b"
+                                              : "none",
+                                            opacity: isActiveOrderNote ? 1 : 0.5,
+                                            color: "#92400e",
+                                          }}
+                                        >
+                                          <span
+                                            style={{
+                                              marginTop: 2,
+                                              display: "inline-block",
+                                              borderRadius: 999,
+                                              padding: "4px 8px",
+                                              fontSize: 11,
+                                              fontWeight: 700,
+                                              color: "#fff",
+                                              ...noteTheme.badgeStyle,
+                                            }}
+                                          >
+                                            {note.orderCode}
+                                          </span>
+                                          <span style={{ fontSize: 12 }}>{note.text}</span>
+                                        </div>
+                                      );
+                                    })}
+                                    {group.notes.length > 5 ? (
+                                      <div style={{ fontSize: 12 }}>
+                                        + {group.notes.length - 5} ghi chú khác
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ) : null}
+
+                              <div
+                                style={{
+                                  marginTop: 12,
+                                  fontSize: 12,
+                                  color: "#64748b",
+                                }}
+                              >
+                                {isOrderHighlighted
+                                  ? "Món này thuộc đơn đang chọn"
+                                  : activeDishKey === group.key
+                                  ? "Đang highlight các đơn chứa món này"
+                                  : "Bấm để highlight các đơn chứa món này"}
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
