@@ -12,6 +12,7 @@ import {
   StickyNote,
   Store,
 } from "lucide-react";
+import tingSound from "./assets/ting.mp3";
 
 function Card({ style, children, ...props }) {
   return (
@@ -619,12 +620,12 @@ function activeMiniOrderBoxStyle(order) {
 }
 
 export default function App() {
-const [orders, setOrders] = useState([]);
-const [search, setSearch] = useState("");
-const [platformFilter, setPlatformFilter] = useState("all");
-const [dateFilter, setDateFilter] = useState(() => getTodayDateKey());
-const [orderStateFilter, setOrderStateFilter] = useState("doing");
-const [loading, setLoading] = useState(true);
+  const [orders, setOrders] = useState([]);
+  const [search, setSearch] = useState("");
+  const [platformFilter, setPlatformFilter] = useState("all");
+  const [dateFilter, setDateFilter] = useState(() => getTodayDateKey());
+  const [orderStateFilter, setOrderStateFilter] = useState("doing");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [now, setNow] = useState(Date.now());
   const [activeDishKey, setActiveDishKey] = useState(null);
@@ -634,23 +635,22 @@ const [loading, setLoading] = useState(true);
   const [newOrderCount, setNewOrderCount] = useState(0);
   const [unseenOrderIds, setUnseenOrderIds] = useState([]);
   const [soundVolume, setSoundVolume] = useState(() => {
-    if (typeof window === "undefined") return 0.22;
+    if (typeof window === "undefined") return 0.4;
     const saved = window.localStorage.getItem("kitchen_sound_volume");
-    const value = saved ? Number(saved) : 0.22;
-    return Number.isFinite(value) ? value : 0.22;
+    const value = saved ? Number(saved) : 0.4;
+    return Number.isFinite(value) ? value : 0.4;
   });
 
   const orderRefs = useRef({});
   const groupedDishRefs = useRef({});
   const groupedScrollRef = useRef(null);
   const lastLocalUpdateRef = useRef(0);
-  const audioContextRef = useRef(null);
   const titleFlashIntervalRef = useRef(null);
   const originalTitleRef = useRef(
     typeof document !== "undefined" ? document.title : "Bảng bếp realtime"
   );
-  const lastSoundTimeRef = useRef(0);
-  const ringingIntervalRef = useRef(null);
+  const audioRef = useRef(null);
+  const ringingTimeoutRef = useRef(null);
   const isRingingRef = useRef(false);
 
   const BASE_WIDTH = 1440;
@@ -663,23 +663,17 @@ const [loading, setLoading] = useState(true);
 
   async function unlockAudio() {
     try {
-      if (typeof window === "undefined") return;
-
-      const AudioContextClass =
-        window.AudioContext || window.webkitAudioContext;
-
-      if (!AudioContextClass) return;
-
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContextClass();
-      }
-
-      if (audioContextRef.current.state === "suspended") {
-        await audioContextRef.current.resume();
-      }
+      if (!audioRef.current) return;
+      audioRef.current.loop = false;
+      audioRef.current.volume = Math.max(0.15, Math.min(soundVolume * 4, 1));
+      await audioRef.current.play();
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
 
       setSoundEnabled(true);
-      window.localStorage.setItem("kitchen_sound_enabled", "1");
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("kitchen_sound_enabled", "1");
+      }
       setError("");
     } catch (err) {
       setError("Trình duyệt đang chặn âm thanh. Hãy bấm lại nút Bật chuông.");
@@ -713,95 +707,65 @@ const [loading, setLoading] = useState(true);
   }
 
   async function playNewOrderSound() {
+    if (!soundEnabled) return;
+    if (!audioRef.current) return;
+
     try {
-      if (!soundEnabled) return;
-      if (typeof window === "undefined") return;
+      const volume = Math.max(0.15, Math.min(soundVolume * 4, 1));
 
-      const nowMs = Date.now();
-      if (nowMs - lastSoundTimeRef.current < 1200) return;
-      lastSoundTimeRef.current = nowMs;
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current.loop = false;
+      audioRef.current.volume = volume;
 
-      const AudioContextClass =
-        window.AudioContext || window.webkitAudioContext;
-
-      if (!AudioContextClass) return;
-
-      if (!audioContextRef.current) {
-        audioContextRef.current = new AudioContextClass();
-      }
-
-      const ctx = audioContextRef.current;
-
-      if (ctx.state === "suspended") {
-        await ctx.resume();
-      }
-
-      const nowTime = ctx.currentTime;
-      const v1 = Math.max(0.01, Math.min(soundVolume, 0.6));
-      const v2 = Math.max(0.01, Math.min(soundVolume * 0.85, 0.5));
-
-      const osc1 = ctx.createOscillator();
-      const gain1 = ctx.createGain();
-
-      osc1.type = "sine";
-      osc1.frequency.setValueAtTime(880, nowTime);
-      osc1.frequency.exponentialRampToValueAtTime(1320, nowTime + 0.12);
-
-      gain1.gain.setValueAtTime(0.0001, nowTime);
-      gain1.gain.exponentialRampToValueAtTime(v1, nowTime + 0.02);
-      gain1.gain.exponentialRampToValueAtTime(0.0001, nowTime + 0.22);
-
-      osc1.connect(gain1);
-      gain1.connect(ctx.destination);
-
-      osc1.start(nowTime);
-      osc1.stop(nowTime + 0.24);
-
-      const osc2 = ctx.createOscillator();
-      const gain2 = ctx.createGain();
-
-      osc2.type = "sine";
-      osc2.frequency.setValueAtTime(990, nowTime + 0.16);
-      osc2.frequency.exponentialRampToValueAtTime(1480, nowTime + 0.3);
-
-      gain2.gain.setValueAtTime(0.0001, nowTime + 0.16);
-      gain2.gain.exponentialRampToValueAtTime(v2, nowTime + 0.18);
-      gain2.gain.exponentialRampToValueAtTime(0.0001, nowTime + 0.38);
-
-      osc2.connect(gain2);
-      gain2.connect(ctx.destination);
-
-      osc2.start(nowTime + 0.16);
-      osc2.stop(nowTime + 0.4);
+      await audioRef.current.play();
     } catch (err) {
-      console.error("Không phát được chuông:", err);
+      console.log("Không phát được chuông:", err);
     }
   }
 
   function stopContinuousRinging() {
-    if (ringingIntervalRef.current) {
-      clearInterval(ringingIntervalRef.current);
-      ringingIntervalRef.current = null;
+    if (ringingTimeoutRef.current) {
+      clearTimeout(ringingTimeoutRef.current);
+      ringingTimeoutRef.current = null;
     }
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+
     isRingingRef.current = false;
   }
 
   async function startContinuousRinging() {
     if (!soundEnabled) return;
+    if (!audioRef.current) return;
     if (isRingingRef.current) return;
 
     isRingingRef.current = true;
-    await playNewOrderSound();
 
-    ringingIntervalRef.current = setInterval(async () => {
-      if (!soundEnabled) return;
+    const playLoop = async () => {
+      if (!isRingingRef.current || !soundEnabled || !audioRef.current) return;
+
       await playNewOrderSound();
-    }, 2200);
+
+      const durationMs = Math.max(
+        1200,
+        Math.floor((audioRef.current.duration || 2) * 1000)
+      );
+
+      ringingTimeoutRef.current = setTimeout(() => {
+        playLoop();
+      }, durationMs + 120);
+    };
+
+    playLoop();
   }
 
   function markOrderAsSeen(orderId) {
     setUnseenOrderIds((prev) => {
-      const next = prev.filter((id) => id !== orderId);
+      const next = prev.filter((id) => String(id) !== String(orderId));
 
       if (next.length === 0) {
         setNewOrderCount(0);
@@ -829,6 +793,12 @@ const [loading, setLoading] = useState(true);
   }, []);
 
   useEffect(() => {
+    audioRef.current = new Audio(tingSound);
+    audioRef.current.preload = "auto";
+    audioRef.current.playbackRate = 1.08;
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("kitchen_sound_enabled", soundEnabled ? "1" : "0");
   }, [soundEnabled]);
@@ -839,38 +809,11 @@ const [loading, setLoading] = useState(true);
   }, [soundVolume]);
 
   useEffect(() => {
-    async function restoreSoundPreference() {
-      if (typeof window === "undefined") return;
-
-      const savedEnabled =
-        window.localStorage.getItem("kitchen_sound_enabled") === "1";
-      if (!savedEnabled) return;
-
-      try {
-        const AudioContextClass =
-          window.AudioContext || window.webkitAudioContext;
-
-        if (!AudioContextClass) return;
-
-        if (!audioContextRef.current) {
-          audioContextRef.current = new AudioContextClass();
-        }
-
-        if (audioContextRef.current.state === "suspended") {
-          try {
-            await audioContextRef.current.resume();
-          } catch (e) {}
-        }
-
-        if (audioContextRef.current.state === "running") {
-          setSoundEnabled(true);
-        }
-      } catch (err) {
-        console.error("Không khôi phục được âm thanh:", err);
-      }
+    if (typeof window === "undefined") return;
+    const savedEnabled = window.localStorage.getItem("kitchen_sound_enabled") === "1";
+    if (savedEnabled) {
+      setSoundEnabled(true);
     }
-
-    restoreSoundPreference();
   }, []);
 
   const isTablet = viewport.width <= 1024;
@@ -914,17 +857,17 @@ const [loading, setLoading] = useState(true);
           setUnseenOrderIds((prev) => {
             const normalizedId =
               newId !== undefined && newId !== null ? String(newId) : null;
-            const prevNormalized = prev.map((id) => String(id));
+            const exists = normalizedId
+              ? prev.some((id) => String(id) === normalizedId)
+              : false;
 
-            let next = prev;
-            if (normalizedId && !prevNormalized.includes(normalizedId)) {
-              next = [...prev, normalizedId];
-            }
+            const next = normalizedId && !exists ? [...prev, normalizedId] : prev;
 
             setNewOrderCount(next.length);
             if (next.length > 0) {
               startTitleFlash(next.length);
             }
+
             return next;
           });
 
@@ -1324,9 +1267,7 @@ const [loading, setLoading] = useState(true);
 
                     <Button
                       variant={platformFilter === "all" ? "default" : "outline"}
-                      onClick={() => {
-                        setPlatformFilter("all");
-                      }}
+                      onClick={() => setPlatformFilter("all")}
                     >
                       Tất cả
                     </Button>
@@ -1895,7 +1836,9 @@ const [loading, setLoading] = useState(true);
 
                       const waiting = order?._waitingMinutes || 0;
                       const isActive = activeOrderId === order.id;
-                      const isUnseen = unseenOrderIds.map(String).includes(String(order.id));
+                      const isUnseen = unseenOrderIds.some(
+                        (id) => String(id) === String(order.id)
+                      );
 
                       return (
                         <button
