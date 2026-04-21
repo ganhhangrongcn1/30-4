@@ -644,7 +644,6 @@ export default function App() {
   const orderRefs = useRef({});
   const groupedDishRefs = useRef({});
   const groupedScrollRef = useRef(null);
-  const lastLocalUpdateRef = useRef(0);
   const titleFlashIntervalRef = useRef(null);
   const originalTitleRef = useRef(
     typeof document !== "undefined" ? document.title : "Bảng bếp realtime"
@@ -652,6 +651,7 @@ export default function App() {
   const audioRef = useRef(null);
   const ringingTimeoutRef = useRef(null);
   const isRingingRef = useRef(false);
+  const unseenOrderIdsRef = useRef([]);
 
   const BASE_WIDTH = 1440;
   const BASE_HEIGHT = 900;
@@ -660,6 +660,15 @@ export default function App() {
     width: typeof window !== "undefined" ? window.innerWidth : BASE_WIDTH,
     height: typeof window !== "undefined" ? window.innerHeight : BASE_HEIGHT,
   });
+
+  const isTablet = viewport.width <= 1024;
+  const isIpadLike = viewport.width <= 1024 && viewport.height <= 1366;
+  const isPortraitTablet = isIpadLike && viewport.height > viewport.width;
+
+  const headerBlockHeight = isIpadLike ? 170 : 150;
+  const panelHeight = isIpadLike
+    ? `calc(100vh - ${headerBlockHeight + 34}px)`
+    : 610;
 
   async function unlockAudio() {
     try {
@@ -745,8 +754,15 @@ export default function App() {
 
     isRingingRef.current = true;
 
+    const GAP_MS = 2200;
+
     const playLoop = async () => {
       if (!isRingingRef.current || !soundEnabled || !audioRef.current) return;
+
+      if (!unseenOrderIdsRef.current || unseenOrderIdsRef.current.length === 0) {
+        stopContinuousRinging();
+        return;
+      }
 
       await playNewOrderSound();
 
@@ -757,7 +773,7 @@ export default function App() {
 
       ringingTimeoutRef.current = setTimeout(() => {
         playLoop();
-      }, durationMs + 120);
+      }, durationMs + GAP_MS);
     };
 
     playLoop();
@@ -766,6 +782,7 @@ export default function App() {
   function markOrderAsSeen(orderId) {
     setUnseenOrderIds((prev) => {
       const next = prev.filter((id) => String(id) !== String(orderId));
+      unseenOrderIdsRef.current = next;
 
       if (next.length === 0) {
         setNewOrderCount(0);
@@ -779,6 +796,10 @@ export default function App() {
       return next;
     });
   }
+
+  useEffect(() => {
+    unseenOrderIdsRef.current = unseenOrderIds;
+  }, [unseenOrderIds]);
 
   useEffect(() => {
     function handleResize() {
@@ -815,11 +836,6 @@ export default function App() {
       setSoundEnabled(true);
     }
   }, []);
-
-  const isTablet = viewport.width <= 1024;
-  const appScale = isTablet
-    ? Math.min(viewport.width / BASE_WIDTH, viewport.height / BASE_HEIGHT)
-    : 1;
 
   useEffect(() => {
     let alive = true;
@@ -862,6 +878,7 @@ export default function App() {
               : false;
 
             const next = normalizedId && !exists ? [...prev, normalizedId] : prev;
+            unseenOrderIdsRef.current = next;
 
             setNewOrderCount(next.length);
             if (next.length > 0) {
@@ -1017,7 +1034,6 @@ export default function App() {
     if (pendingOrderIds[orderId]) return;
 
     const previousOrders = orders;
-    lastLocalUpdateRef.current = Date.now();
     setOrderPending(orderId, true);
 
     const updatedOrders = orders.map((order) => {
@@ -1093,7 +1109,6 @@ export default function App() {
     const previousOrders = orders;
     const doneAt = new Date().toISOString();
 
-    lastLocalUpdateRef.current = Date.now();
     setOrderPending(orderId, true);
 
     setOrders((prev) =>
@@ -1135,7 +1150,6 @@ export default function App() {
     if (!order) return;
 
     const previousOrders = orders;
-    lastLocalUpdateRef.current = Date.now();
     setOrderPending(orderId, true);
 
     const dishes = (Array.isArray(order.dishes) ? order.dishes : []).map((dish) => {
@@ -1202,25 +1216,34 @@ export default function App() {
           display: "flex",
           justifyContent: "center",
           alignItems: "flex-start",
-          padding: isTablet ? 0 : 12,
+          padding: isIpadLike ? 0 : 12,
         }}
       >
         <div
           style={{
-            width: BASE_WIDTH,
-            height: BASE_HEIGHT,
-            transform: `scale(${appScale})`,
+            width: isIpadLike ? "100vw" : BASE_WIDTH,
+            height: isIpadLike ? "100vh" : BASE_HEIGHT,
+            transform: "scale(1)",
             transformOrigin: "top center",
           }}
         >
-          <div style={{ maxWidth: 1440, margin: "0 auto", height: "100%" }}>
+          <div
+            style={{
+              width: "100%",
+              maxWidth: isIpadLike ? "100%" : 1440,
+              margin: "0 auto",
+              height: "100%",
+              padding: isIpadLike ? 8 : 0,
+              boxSizing: "border-box",
+            }}
+          >
             <div
               style={{
                 background: "#fff",
-                borderRadius: 24,
-                padding: 16,
+                borderRadius: isIpadLike ? 18 : 24,
+                padding: isIpadLike ? 12 : 16,
                 boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                marginBottom: 16,
+                marginBottom: isIpadLike ? 10 : 16,
               }}
             >
               <div
@@ -1228,17 +1251,33 @@ export default function App() {
                   display: "flex",
                   flexWrap: "wrap",
                   justifyContent: "space-between",
-                  gap: 16,
+                  gap: isIpadLike ? 10 : 16,
                 }}
               >
-                <div>
-                  <h1 style={{ margin: 0, fontSize: 32 }}>Bảng bếp realtime</h1>
-                  <p style={{ margin: "8px 0 0", color: "#64748b" }}>
+                <div style={{ minWidth: isIpadLike ? 220 : "auto" }}>
+                  <h1 style={{ margin: 0, fontSize: isIpadLike ? 26 : 32 }}>
+                    Bảng bếp realtime
+                  </h1>
+                  <p
+                    style={{
+                      margin: "6px 0 0",
+                      color: "#64748b",
+                      fontSize: isIpadLike ? 14 : 16,
+                    }}
+                  >
                     Đơn hàng hiển thị realtime từ Supabase, tick món khi làm xong.
                   </p>
                 </div>
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: isIpadLike ? 8 : 10,
+                    flex: 1,
+                    minWidth: isIpadLike ? 0 : 520,
+                  }}
+                >
                   <div
                     style={{
                       display: "flex",
@@ -1247,7 +1286,13 @@ export default function App() {
                       alignItems: "center",
                     }}
                   >
-                    <div style={{ position: "relative", minWidth: 240 }}>
+                    <div
+                      style={{
+                        position: "relative",
+                        minWidth: isIpadLike ? 190 : 240,
+                        flex: isIpadLike ? "1 1 220px" : "0 0 auto",
+                      }}
+                    >
                       <Search
                         size={16}
                         style={{
@@ -1258,7 +1303,12 @@ export default function App() {
                         }}
                       />
                       <Input
-                        style={{ paddingLeft: 34, minWidth: 260 }}
+                        style={{
+                          paddingLeft: 34,
+                          minWidth: isIpadLike ? "100%" : 260,
+                          width: "100%",
+                          boxSizing: "border-box",
+                        }}
                         placeholder="Tìm mã đơn, khách, món, ghi chú..."
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
@@ -1268,42 +1318,49 @@ export default function App() {
                     <Button
                       variant={platformFilter === "all" ? "default" : "outline"}
                       onClick={() => setPlatformFilter("all")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Tất cả
                     </Button>
                     <Button
                       variant={platformFilter === "grab" ? "default" : "outline"}
                       onClick={() => setPlatformFilter("grab")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Grab
                     </Button>
                     <Button
                       variant={platformFilter === "shopee" ? "default" : "outline"}
                       onClick={() => setPlatformFilter("shopee")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Shopee
                     </Button>
                     <Button
                       variant={platformFilter === "xanhngon" ? "default" : "outline"}
                       onClick={() => setPlatformFilter("xanhngon")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Xanh Ngon
                     </Button>
                     <Button
                       variant={orderStateFilter === "doing" ? "default" : "outline"}
                       onClick={() => setOrderStateFilter("doing")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Đang làm
                     </Button>
                     <Button
                       variant={orderStateFilter === "done" ? "default" : "outline"}
                       onClick={() => setOrderStateFilter("done")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Đã xong
                     </Button>
                     <Button
                       variant={orderStateFilter === "all" ? "default" : "outline"}
                       onClick={() => setOrderStateFilter("all")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Tất cả trạng thái
                     </Button>
@@ -1321,15 +1378,20 @@ export default function App() {
                       type="date"
                       value={dateFilter}
                       onChange={(e) => setDateFilter(e.target.value)}
-                      style={{ width: 170 }}
+                      style={{ width: isIpadLike ? 155 : 170 }}
                     />
                     <Button
                       variant={dateFilter === getTodayDateKey() ? "default" : "outline"}
                       onClick={() => setDateFilter(getTodayDateKey())}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       Hôm nay
                     </Button>
-                    <Button variant="outline" onClick={() => setDateFilter("")}>
+                    <Button
+                      variant="outline"
+                      onClick={() => setDateFilter("")}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
+                    >
                       Bỏ lọc ngày
                     </Button>
 
@@ -1346,6 +1408,7 @@ export default function App() {
                         }
                         await unlockAudio();
                       }}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
                     >
                       {soundEnabled ? (
                         <Bell size={16} style={{ marginRight: 6 }} />
@@ -1385,7 +1448,7 @@ export default function App() {
                         step="0.01"
                         value={soundVolume}
                         onChange={(e) => setSoundVolume(Number(e.target.value))}
-                        style={{ width: 120 }}
+                        style={{ width: isIpadLike ? 100 : 120 }}
                       />
                       <span
                         style={{
@@ -1399,7 +1462,11 @@ export default function App() {
                       </span>
                     </div>
 
-                    <Button variant="outline" onClick={() => window.location.reload()}>
+                    <Button
+                      variant="outline"
+                      onClick={() => window.location.reload()}
+                      style={{ padding: isIpadLike ? "9px 12px" : "10px 14px" }}
+                    >
                       <RefreshCcw size={16} style={{ marginRight: 6 }} />
                       Tải lại
                     </Button>
@@ -1413,7 +1480,7 @@ export default function App() {
                 style={{
                   border: "1px solid #fecaca",
                   background: "#fef2f2",
-                  marginBottom: 16,
+                  marginBottom: isIpadLike ? 10 : 16,
                 }}
               >
                 <CardContent style={{ color: "#b91c1c" }}>{error}</CardContent>
@@ -1421,7 +1488,7 @@ export default function App() {
             ) : null}
 
             {loading ? (
-              <Card style={{ marginBottom: 16 }}>
+              <Card style={{ marginBottom: isIpadLike ? 10 : 16 }}>
                 <CardContent>Đang tải dữ liệu...</CardContent>
               </Card>
             ) : null}
@@ -1429,24 +1496,29 @@ export default function App() {
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "minmax(0, 1.65fr) minmax(420px, 0.95fr)",
-                gap: 16,
+                gridTemplateColumns: isPortraitTablet
+                  ? "1fr"
+                  : isIpadLike
+                  ? "minmax(0, 1.45fr) minmax(300px, 0.95fr)"
+                  : "minmax(0, 1.65fr) minmax(420px, 0.95fr)",
+                gap: isIpadLike ? 10 : 16,
                 alignItems: "start",
+                height: isIpadLike ? `calc(100vh - ${headerBlockHeight + 24}px)` : "auto",
               }}
             >
               <div style={{ display: "flex", flexDirection: "column", gap: 12, minHeight: 0 }}>
                 <div
                   style={{
-                    height: 610,
-                    minHeight: 610,
-                    maxHeight: 610,
+                    height: panelHeight,
+                    minHeight: panelHeight,
+                    maxHeight: panelHeight,
                     overflowY: "auto",
                     overflowX: "hidden",
                     paddingRight: 6,
                     borderRadius: 18,
                   }}
                 >
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: isIpadLike ? 10 : 12 }}>
                     {filteredOrders.map((order) => {
                       const dishes = Array.isArray(order.dishes) ? order.dishes : [];
                       const allDone = order._allDone;
@@ -1500,7 +1572,10 @@ export default function App() {
                           }}
                         >
                           <CardHeader
-                            style={{ cursor: "pointer" }}
+                            style={{
+                              cursor: "pointer",
+                              padding: isIpadLike ? 12 : 16,
+                            }}
                             onClick={() => {
                               const nextActiveOrderId =
                                 activeOrderId === order.id ? null : order.id;
@@ -1525,7 +1600,7 @@ export default function App() {
                               }}
                             >
                               <div>
-                                <CardTitle style={{ fontSize: 26 }}>
+                                <CardTitle style={{ fontSize: isIpadLike ? 22 : 26 }}>
                                   {order.ma_noi_bo || order.id}
                                 </CardTitle>
                                 <div
@@ -1555,12 +1630,15 @@ export default function App() {
                                 style={{
                                   textAlign: "right",
                                   color: kitchenDone ? "#64748b" : "#475569",
+                                  minWidth: isIpadLike ? 90 : 120,
                                 }}
                               >
-                                <div style={{ fontSize: 22 }}>
+                                <div style={{ fontSize: isIpadLike ? 20 : 22 }}>
                                   {doneItems}/{totalItems} phần
                                 </div>
-                                <div>{allDone ? "Sẵn sàng trả đơn" : "Đang làm"}</div>
+                                <div style={{ fontSize: isIpadLike ? 13 : 14 }}>
+                                  {allDone ? "Sẵn sàng trả đơn" : "Đang làm"}
+                                </div>
                               </div>
                             </div>
 
@@ -1568,8 +1646,8 @@ export default function App() {
                               style={{
                                 display: "grid",
                                 gap: 8,
-                                marginTop: 14,
-                                fontSize: 18,
+                                marginTop: 12,
+                                fontSize: isIpadLike ? 16 : 18,
                               }}
                             >
                               <div
@@ -1606,16 +1684,16 @@ export default function App() {
                             </div>
                           </CardHeader>
 
-                          <CardContent>
+                          <CardContent style={{ padding: isIpadLike ? 12 : 16 }}>
                             <Separator />
 
-                            <ScrollArea style={{ maxHeight: 260, paddingRight: 6 }}>
+                            <ScrollArea style={{ maxHeight: isIpadLike ? 235 : 260, paddingRight: 6 }}>
                               <div
                                 style={{
                                   display: "grid",
                                   gridTemplateColumns:
-                                    "repeat(auto-fit, minmax(180px, 1fr))",
-                                  gap: 12,
+                                    "repeat(auto-fit, minmax(170px, 1fr))",
+                                  gap: 10,
                                 }}
                               >
                                 {dishes.flatMap((dish, index) => {
@@ -1650,7 +1728,7 @@ export default function App() {
                                           background: "rgba(255,255,255,0.9)",
                                           border: "1px solid #e2e8f0",
                                           borderRadius: 18,
-                                          padding: 14,
+                                          padding: 12,
                                           textAlign: "left",
                                           cursor: !!pendingOrderIds[order.id]
                                             ? "not-allowed"
@@ -1691,7 +1769,7 @@ export default function App() {
                                                 <div
                                                   style={{
                                                     fontWeight: 700,
-                                                    fontSize: 16,
+                                                    fontSize: 15,
                                                     color: isDone ? "#94a3b8" : "#0f172a",
                                                     textDecoration: isDone
                                                       ? "line-through"
@@ -1719,10 +1797,10 @@ export default function App() {
                                             {(dish?.tuy_chon || []).length > 0 ? (
                                               <div
                                                 style={{
-                                                  marginTop: 10,
+                                                  marginTop: 8,
                                                   display: "flex",
                                                   flexWrap: "wrap",
-                                                  gap: 8,
+                                                  gap: 6,
                                                 }}
                                               >
                                                 {(dish?.tuy_chon || []).map((opt, optIndex) => (
@@ -1741,7 +1819,7 @@ export default function App() {
                                               <div
                                                 onClick={(e) => e.stopPropagation()}
                                                 style={{
-                                                  marginTop: 10,
+                                                  marginTop: 8,
                                                   background: "#fef3c7",
                                                   color: "#92400e",
                                                   borderRadius: 12,
@@ -1773,7 +1851,7 @@ export default function App() {
                               </div>
                             </ScrollArea>
 
-                            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
                               <Button
                                 style={{ ...activeTheme.actionStyle, flex: 1 }}
                                 onClick={(e) => {
@@ -1821,7 +1899,7 @@ export default function App() {
                     style={{
                       display: "inline-flex",
                       flexWrap: "nowrap",
-                      gap: 10,
+                      gap: 8,
                       minWidth: "max-content",
                     }}
                   >
@@ -1863,10 +1941,10 @@ export default function App() {
                             });
                           }}
                           style={{
-                            minWidth: 118,
+                            minWidth: isIpadLike ? 108 : 118,
                             flex: "0 0 auto",
                             borderRadius: 14,
-                            padding: "12px 12px",
+                            padding: isIpadLike ? "11px 11px" : "12px 12px",
                             textAlign: "left",
                             fontWeight: 700,
                             cursor: "pointer",
@@ -1913,7 +1991,7 @@ export default function App() {
 
                           <div
                             style={{
-                              fontSize: 15,
+                              fontSize: isIpadLike ? 14 : 15,
                               lineHeight: 1.2,
                               whiteSpace: "nowrap",
                             }}
@@ -1923,8 +2001,8 @@ export default function App() {
 
                           <div
                             style={{
-                              marginTop: 10,
-                              fontSize: 13,
+                              marginTop: 8,
+                              fontSize: 12,
                               fontWeight: isActive ? 700 : 600,
                               opacity: 1,
                               color: isActive
@@ -1943,36 +2021,42 @@ export default function App() {
 
               <Card
                 style={{
-                  position: "sticky",
+                  position: isPortraitTablet ? "relative" : "sticky",
                   top: 12,
                   height: "fit-content",
                   alignSelf: "start",
                 }}
               >
-                <CardHeader>
+                <CardHeader style={{ padding: isIpadLike ? 12 : 16 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <ListOrdered size={18} />
-                    <CardTitle style={{ fontSize: 22 }}>
+                    <CardTitle style={{ fontSize: isIpadLike ? 20 : 22 }}>
                       Tổng hợp món đang làm
                     </CardTitle>
                   </div>
-                  <p style={{ color: "#64748b", margin: "8px 0 0" }}>
+                  <p
+                    style={{
+                      color: "#64748b",
+                      margin: "8px 0 0",
+                      fontSize: isIpadLike ? 13 : 14,
+                    }}
+                  >
                     Gom các món giống nhau từ tất cả đơn đang hiển thị để bếp dễ chế
                     biến theo lô.
                   </p>
                 </CardHeader>
 
-                <CardContent>
+                <CardContent style={{ padding: isIpadLike ? 12 : 16 }}>
                   <ScrollArea
                     ref={groupedScrollRef}
                     style={{
-                      height: 610,
-                      minHeight: 610,
-                      maxHeight: 610,
+                      height: isPortraitTablet ? 320 : panelHeight,
+                      minHeight: isPortraitTablet ? 320 : panelHeight,
+                      maxHeight: isPortraitTablet ? 320 : panelHeight,
                       paddingRight: 6,
                     }}
                   >
-                    <div style={{ display: "grid", gap: 12 }}>
+                    <div style={{ display: "grid", gap: 10 }}>
                       {groupedDishes.length === 0 ? (
                         <div
                           style={{
@@ -2045,7 +2129,7 @@ export default function App() {
                                     : isOrderHighlighted
                                     ? "#f5f3ff"
                                     : "#f8fafc",
-                                padding: 14,
+                                padding: 12,
                                 cursor: "pointer",
                               }}
                             >
@@ -2057,7 +2141,7 @@ export default function App() {
                                 }}
                               >
                                 <div>
-                                  <div style={{ fontWeight: 700, fontSize: 18 }}>
+                                  <div style={{ fontWeight: 700, fontSize: isIpadLike ? 17 : 18 }}>
                                     {group.name}
                                   </div>
                                   {Number.isFinite(group.oldestPendingTimeValue) &&
@@ -2087,10 +2171,10 @@ export default function App() {
                                   {group.options.length > 0 ? (
                                     <div
                                       style={{
-                                        marginTop: 10,
+                                        marginTop: 8,
                                         display: "flex",
                                         flexWrap: "wrap",
-                                        gap: 8,
+                                        gap: 6,
                                       }}
                                     >
                                       {Object.entries(
@@ -2115,7 +2199,7 @@ export default function App() {
                                 </div>
 
                                 <div style={{ textAlign: "right" }}>
-                                  <div style={{ fontSize: 30, fontWeight: 700 }}>
+                                  <div style={{ fontSize: isIpadLike ? 28 : 30, fontWeight: 700 }}>
                                     {group.pendingQuantity}
                                   </div>
                                   <div style={{ color: "#64748b", fontSize: 13 }}>
@@ -2253,7 +2337,7 @@ export default function App() {
 
                               <div
                                 style={{
-                                  marginTop: 12,
+                                  marginTop: 10,
                                   fontSize: 12,
                                   color: "#64748b",
                                 }}
