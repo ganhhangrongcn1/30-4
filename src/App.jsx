@@ -655,6 +655,8 @@ export default function App() {
   const ringingTimeoutRef = useRef(null);
   const isRingingRef = useRef(false);
   const unseenOrderIdsRef = useRef([]);
+  const knownOrderIdsRef = useRef(new Set());
+  const hasUserInteractedRef = useRef(false);
 
   const [viewport, setViewport] = useState({
     width: typeof window !== "undefined" ? window.innerWidth : 1024,
@@ -665,15 +667,23 @@ export default function App() {
 
   const headerHeight = 146;
   const bodyHeight = `calc(100vh - ${headerHeight + 18}px)`;
-  const leftMainHeight = `calc(100vh - ${headerHeight + 92}px)`;
   const rightMainHeight = `calc(100vh - ${headerHeight + 34}px)`;
 
   async function unlockAudio() {
     try {
-      if (!audioRef.current) return;
+      if (!audioRef.current) return false;
+
+      hasUserInteractedRef.current = true;
+
       audioRef.current.loop = false;
       audioRef.current.volume = Math.max(0.15, Math.min(soundVolume * 4, 1));
-      await audioRef.current.play();
+      audioRef.current.currentTime = 0;
+
+      const playPromise = audioRef.current.play();
+      if (playPromise && typeof playPromise.then === "function") {
+        await playPromise;
+      }
+
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
 
@@ -682,8 +692,11 @@ export default function App() {
         window.localStorage.setItem("kitchen_sound_enabled", "1");
       }
       setError("");
+      return true;
     } catch (err) {
-      setError("Trình duyệt đang chặn âm thanh. Hãy bấm lại nút Bật chuông.");
+      setSoundEnabled(false);
+      setError("Trình duyệt đang chặn âm thanh. Hãy bấm nút Bật chuông 1 lần.");
+      return false;
     }
   }
 
@@ -715,6 +728,7 @@ export default function App() {
   async function playNewOrderSound() {
     if (!soundEnabled) return;
     if (!audioRef.current) return;
+    if (!hasUserInteractedRef.current) return;
 
     try {
       const volume = Math.max(0.15, Math.min(soundVolume * 4, 1));
@@ -722,9 +736,14 @@ export default function App() {
       audioRef.current.currentTime = 0;
       audioRef.current.loop = false;
       audioRef.current.volume = volume;
-      await audioRef.current.play();
+
+      const playPromise = audioRef.current.play();
+      if (playPromise && typeof playPromise.then === "function") {
+        await playPromise;
+      }
     } catch (err) {
       console.log("Không phát được chuông:", err);
+      setError("Chuông bị trình duyệt chặn. Hãy bấm Bật chuông lại 1 lần.");
     }
   }
 
@@ -743,6 +762,7 @@ export default function App() {
   async function startContinuousRinging() {
     if (!soundEnabled) return;
     if (!audioRef.current) return;
+    if (!hasUserInteractedRef.current) return;
     if (isRingingRef.current) return;
 
     isRingingRef.current = true;
@@ -789,6 +809,51 @@ export default function App() {
     });
   }
 
+  async function handleIncomingOrder(row) {
+    const incomingHubId = String(row?.hub_id || "").trim();
+    if (incomingHubId !== TARGET_HUB_ID) return;
+
+    const orderId =
+      row?.id !== undefined && row?.id !== null ? String(row.id) : null;
+    if (!orderId) return;
+
+    const status = String(row?.trang_thai || "").trim().toUpperCase();
+    if (
+      ["FINISH", "COMPLETED", "DONE", "CANCEL", "CANCELED", "CANCELLED"].includes(
+        status
+      )
+    ) {
+      return;
+    }
+
+    const isKnown = knownOrderIdsRef.current.has(orderId);
+
+    if (!isKnown) {
+      knownOrderIdsRef.current.add(orderId);
+
+      setUnseenOrderIds((prev) => {
+        const exists = prev.some((id) => String(id) === orderId);
+        const next = exists ? prev : [...prev, orderId];
+        unseenOrderIdsRef.current = next;
+
+        setNewOrderCount(next.length);
+        if (next.length > 0) startTitleFlash(next.length);
+
+        return next;
+      });
+
+      await startContinuousRinging();
+    }
+
+    setOrders((prev) => {
+      const exists = prev.some((item) => String(item.id) === orderId);
+      if (exists) {
+        return prev.map((item) => (String(item.id) === orderId ? row : item));
+      }
+      return [row, ...prev];
+    });
+  }
+
   useEffect(() => {
     unseenOrderIdsRef.current = unseenOrderIds;
   }, [unseenOrderIds]);
@@ -823,7 +888,9 @@ export default function App() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const savedEnabled = window.localStorage.getItem("kitchen_sound_enabled") === "1";
-    if (savedEnabled) setSoundEnabled(true);
+    if (savedEnabled) {
+      setSoundEnabled(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -840,8 +907,18 @@ export default function App() {
         if (error) throw error;
 
         if (alive) {
-          setOrders(data || []);
+          const rows = data || [];
+          setOrders(rows);
           setError("");
+
+          if (knownOrderIdsRef.current.size === 0) {
+            knownOrderIdsRef.current = new Set(
+              rows
+                .map((row) => row?.id)
+                .filter((id) => id !== undefined && id !== null)
+                .map((id) => String(id))
+            );
+          }
         }
       } catch (err) {
         if (alive) setError(err.message || "Không đọc được Supabase");
@@ -858,34 +935,67 @@ export default function App() {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "orders" },
         async (payload) => {
-          const insertedHubId = String(payload?.new?.hub_id || "").trim();
-          if (insertedHubId !== TARGET_HUB_ID) return;
-
-          const newId = payload?.new?.id;
-
-          setUnseenOrderIds((prev) => {
-            const normalizedId =
-              newId !== undefined && newId !== null ? String(newId) : null;
-            const exists = normalizedId
-              ? prev.some((id) => String(id) === normalizedId)
-              : false;
-
-            const next = normalizedId && !exists ? [...prev, normalizedId] : prev;
-            unseenOrderIdsRef.current = next;
-
-            setNewOrderCount(next.length);
-            if (next.length > 0) {
-              startTitleFlash(next.length);
-            }
-
-            return next;
-          });
-
-          await startContinuousRinging();
-          loadOrders();
+          await handleIncomingOrder(payload?.new);
         }
       )
-      .subscribe();
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "orders" },
+        async (payload) => {
+          const newRow = payload?.new;
+          const oldRow = payload?.old;
+
+          const newId =
+            newRow?.id !== undefined && newRow?.id !== null
+              ? String(newRow.id)
+              : "";
+          const oldStatus = String(oldRow?.trang_thai || "").trim().toUpperCase();
+          const newStatus = String(newRow?.trang_thai || "").trim().toUpperCase();
+
+          const isActive = ![
+            "FINISH",
+            "COMPLETED",
+            "DONE",
+            "CANCEL",
+            "CANCELED",
+            "CANCELLED",
+          ].includes(newStatus);
+
+          setOrders((prev) =>
+            prev.map((item) => (String(item.id) === newId ? newRow : item))
+          );
+
+          if (!knownOrderIdsRef.current.has(newId) && isActive) {
+            await handleIncomingOrder(newRow);
+            return;
+          }
+
+          if (
+            ["FINISH", "COMPLETED", "DONE", "CANCEL", "CANCELED", "CANCELLED"].includes(
+              newStatus
+            )
+          ) {
+            setUnseenOrderIds((prev) => {
+              const next = prev.filter((id) => String(id) !== newId);
+              unseenOrderIdsRef.current = next;
+
+              if (next.length === 0) {
+                setNewOrderCount(0);
+                stopTitleFlash();
+                stopContinuousRinging();
+              } else {
+                setNewOrderCount(next.length);
+                startTitleFlash(next.length);
+              }
+
+              return next;
+            });
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log("Realtime status:", status);
+      });
 
     return () => {
       alive = false;
@@ -1248,7 +1358,7 @@ export default function App() {
             width: "100%",
             height: "100%",
             display: "grid",
-            gridTemplateRows: `${headerHeight}px 1fr`,
+            gridTemplateRows: `146px 1fr`,
             gap: 10,
           }}
         >
@@ -1336,7 +1446,11 @@ export default function App() {
                         }
                         return;
                       }
-                      await unlockAudio();
+
+                      const ok = await unlockAudio();
+                      if (ok && unseenOrderIdsRef.current.length > 0) {
+                        await startContinuousRinging();
+                      }
                     }}
                   >
                     {soundEnabled ? (
@@ -1474,7 +1588,7 @@ export default function App() {
               display: "grid",
               gridTemplateColumns: "1.6fr 0.95fr",
               gap: 10,
-              height: bodyHeight,
+              height: `calc(100vh - ${146 + 18}px)`,
             }}
           >
             <div
